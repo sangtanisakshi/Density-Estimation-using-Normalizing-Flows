@@ -1,0 +1,12 @@
+{
+
+"python.defaultInterpreterPath": "C:\\Users\\cupca\\anaconda3\\envs\\jax_nf\\python.exe",
+
+"python.terminal.activateEnvironment": true,
+
+"terminal.integrated.defaultProfile.windows": "Command Prompt",
+
+"jupyter.enablePythonKernelLogging": true,
+
+
+}
