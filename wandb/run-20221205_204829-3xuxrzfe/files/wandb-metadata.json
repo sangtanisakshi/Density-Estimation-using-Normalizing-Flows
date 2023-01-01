@@ -1,0 +1,43 @@
+{
+    "os": "Windows-10-10.0.19044-SP0",
+    "python": "3.9.15",
+    "heartbeatAt": "2022-12-05T19:48:30.761081",
+    "startedAt": "2022-12-05T19:48:29.737475",
+    "docker": null,
+    "cuda": null,
+    "args": null,
+    "state": "running",
+    "program": "<python with no main file>",
+    "host": "DESKTOP-2BI0HKR",
+    "username": "cupca",
+    "executable": "c:\\Users\\cupca\\anaconda3\\envs\\jax_nf\\python.exe",
+    "cpu_count": 6,
+    "cpu_count_logical": 12,
+    "cpu_freq": {
+        "current": 3301.0,
+        "min": 0.0,
+        "max": 3301.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 3301.0,
+            "min": 0.0,
+            "max": 3301.0
+        }
+    ],
+    "disk": {
+        "total": 476.31914138793945,
+        "used": 457.9457550048828
+    },
+    "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+            "memory_total": 6442450944
+        }
+    ],
+    "memory": {
+        "total": 15.355525970458984
+    }
+}

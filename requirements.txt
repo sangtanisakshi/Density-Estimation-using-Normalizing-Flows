@@ -1,0 +1,13 @@
+jax==0.3.22 https://whls.blob.core.windows.net/unstable/cpu/jaxlib-0.3.22-cp39-cp39-win_amd64.whl
+flax
+matplotlib
+numpy
+pandas
+scikit-learn
+tensorflow
+tensorflow-datasets
+ipykernel
+tqdm
+scikit-image
+wandb
+einops
