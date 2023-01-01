@@ -1,0 +1,76 @@
+{
+    "os": "Linux-5.4.0-92-generic-x86_64-with-glibc2.31",
+    "python": "3.10.8",
+    "heartbeatAt": "2022-12-29T22:13:08.171267",
+    "startedAt": "2022-12-29T22:13:02.974438",
+    "docker": null,
+    "cuda": null,
+    "args": null,
+    "state": "running",
+    "program": "train_og-jvsc-e68dfa2a-bcb5-43ca-bfe9-f707193de89dde42b209-87fb-473a-b94f-4f33dd119fa2.ipynb",
+    "root": "/dhc/home/sakshi.sangtani/Density-Estimation-using-Normalizing-Flows",
+    "git": {
+        "remote": "https://github.com/sangtanisakshi/Density-Estimation-using-Normalizing-Flows.git",
+        "commit": "40dd108990fd3a177963d6cd772a18f197e93478"
+    },
+    "email": "sakshi.sangtani22@gmail.com",
+    "host": "access2",
+    "username": "sakshi.sangtani",
+    "executable": "/dhc/home/sakshi.sangtani/conda3/envs/jax_nf/bin/python",
+    "cpu_count": 8,
+    "cpu_count_logical": 8,
+    "cpu_freq": {
+        "current": 2394.375,
+        "min": 0.0,
+        "max": 0.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2394.375,
+            "min": 0.0,
+            "max": 0.0
+        }
+    ],
+    "disk": {
+        "total": 10.657142639160156,
+        "used": 4.523216247558594
+    },
+    "memory": {
+        "total": 15.63323974609375
+    }
+}
