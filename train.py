@@ -1,123 +1,27 @@
 import jax
-import jaxlib 
 import flax
+# import optax (change flax optimizer opt to optax)
 import jax.numpy as jnp
 import flax.linen as nn
-
+import numpy as np
 import os
 import time
 import tensorflow as tf
-from functools import partial
 
-import numpy as np
+from functools import partial
 from matplotlib import pyplot as plt
+
+from sample import postprocess
+from sample import sample
+from model import GLOW
+from utils import summarize_jax_model
+from utils import plot_image_grid
+from utils import map_fn
 
 print('Jax version', jax.__version__)
 print('Flax version', flax.__version__)
-print(jax.devices())
-
-from layers import squeeze, unsqueeze
-from layers import Split
-from layers import ActNorm, Conv1x1, AffineCoupling
-
-from model import FlowStep, GLOW
-
-from utils import summarize_jax_model
-from utils import plot_image_grid
 
 random_key = jax.random.PRNGKey(0)
-
-print("Example")
-x = jax.random.randint(random_key, (1, 4, 4, 1), 0, 10)
-print('x = ', '\n     '.join(' '.join(str(v[0]) for v in row) for row in x[0]))
-print('\nbecomes\n')
-x = squeeze(x)
-print('y with shape', x.shape, 'where')
-print('\n'.join(f'  y[{i}, {j}] = {x[0, i, j]}' for i in range(2) for j in range(2)))
-
-print("Sanity check for  reversibility")
-def sanity_check():
-    x = jax.random.randint(random_key, (1, 4, 4, 16), 0, 10)
-    y = unsqueeze(squeeze(x))
-    z = squeeze(unsqueeze(x))
-    print("  \033[92m✓\033[0m" if np.array_equal(x, y) else "  \033[91mx\033[0m", 
-          "unsqueeze o squeeze = id")
-    print("  \033[92m✓\033[0m" if np.array_equal(x, z) else "  \033[91mx\033[0m", 
-          "squeeze o unsqueeze = id")
-sanity_check()
-
-def split(x):
-    return jnp.split(x, 2, axis=-1)
-
-def unsplit(x, z):
-    return jnp.concatenate([z, x], axis=-1)
-
-print("Sanity check for data-dependant init in ActNorm")
-
-def sanity_check():
-    x = jax.random.normal(random_key, (1, 256, 256, 3))
-    model = ActNorm()
-    init_variables = model.init(random_key, x)
-    y, _ = model.apply(init_variables, x)
-    m = jnp.mean(y); v = jnp.std(y); eps = 1e-5
-    print("  \033[92m✓\033[0m" if abs(m) < eps else "  \033[91mx\033[0m", "Mean:", m)
-    print("  \033[92m✓\033[0m" if abs(v  - 1) < eps else "  \033[91mx\033[0m",
-          "Standard deviation", v)
-sanity_check()
-
-# Summarize a flow step
-def summary():
-    x = jax.random.normal(random_key, (32, 10, 10, 6))
-    model = FlowStep(key=random_key)
-    init_variables = model.init(random_key, x)
-    summarize_jax_model(init_variables, max_depth=2)
-summary()
-
-print("Sanity check for reversibility (no sampling in reverse pass)")
-
-def sanity_check():
-    # Input
-    x_1 = jax.random.normal(random_key, (32, 32, 32, 6))
-    K, L = 16, 3
-    model = GLOW(K=K, L=L, nn_width=128, key=random_key, learn_top_prior=True)
-    init_variables = model.init(random_key, x_1)
-
-    # Forward call
-    _, z, logdet, priors = model.apply(init_variables, x_1)
-
-    # Check output shape
-    expected_h = x_1.shape[1] // 2**L
-    expected_c = x_1.shape[-1] * 4**L // 2**(L - 1)
-    print("  \033[92m✓\033[0m" if z[-1].shape[1] == expected_h and z[-1].shape[-1] == expected_c 
-          else "  \033[91mx\033[0m",
-          "Forward pass output shape is", z[-1].shape)
-
-    # Check sizes of the intermediate latent
-    correct_latent_shapes = True
-    correct_prior_shapes = True
-    for i, (zi, priori) in enumerate(zip(z, priors)):
-        expected_h = x_1.shape[1] // 2**(i + 1)
-        expected_c = x_1.shape[-1] * 2**(i + 1)
-        if i == L - 1:
-            expected_c *= 2
-        if zi.shape[1] != expected_h or zi.shape[-1] != expected_c:
-            correct_latent_shapes = False
-        if priori.shape[1] != expected_h or priori.shape[-1] != 2 * expected_c:
-            correct_prior_shapes = False
-    print("  \033[92m✓\033[0m" if correct_latent_shapes else "  \033[91mx\033[0m",
-          "Check intermediate latents shape")
-    print("  \033[92m✓\033[0m" if correct_latent_shapes else "  \033[91mx\033[0m",
-          "Check intermediate priors shape")
-
-    # Reverse the network without sampling
-    x_3, *_ = model.apply(init_variables, z[-1], z=z, reverse=True)
-
-    print("  \033[92m✓\033[0m" if np.array_equal(x_1.shape, x_3.shape) else "  \033[91mx\033[0m", 
-          "Reverse pass output shape = Original shape =", x_1.shape)
-    diff = jnp.mean(jnp.abs(x_1 - x_3))
-    print("  \033[92m✓\033[0m" if diff < 1e-4 else "  \033[91mx\033[0m", 
-          f"Diff between x and Glow_r o Glow (x) = {diff:.3e}")
-sanity_check()
 
 @jax.vmap
 def get_logpz(z, priors):
@@ -132,55 +36,69 @@ def get_logpz(z, priors):
                          - 0.5 * (zi - mu) ** 2 / jnp.exp(2 * logsigma))
     return logpz
 
-def map_fn(image_path, num_bits=5, size=256, training=True):
-    """Read image file, quantize and map to [-0.5, 0.5] range.
-    If num_bits = 8, there is no quantization effect."""
-    image = tf.io.decode_jpeg(tf.io.read_file(image_path))
-    # Resize input image
-    image = tf.cast(image, tf.float32)
-    image = tf.image.resize(image, (size, size))
-    image = tf.clip_by_value(image, 0., 255.)
-    # Discretize to the given number of bits
-    if num_bits < 8:
-        image = tf.floor(image / 2 ** (8 - num_bits))
-    # Send to [-1, 1]
-    num_bins = 2 ** num_bits
-    image = image / num_bins - 0.5
-    if training:
-        image = image + tf.random.uniform(tf.shape(image), 0, 1. / num_bins)
-    return image
 
-@jax.jit
-def postprocess(x, num_bits):
-    """Map [-0.5, 0.5] quantized images to uint space"""
-    num_bins = 2 ** num_bits
-    x = jnp.floor((x + 0.5) * num_bins)
-    x *= 256. / num_bins
-    return jnp.clip(x, 0, 255).astype(jnp.uint8)
-
-def sample(model, 
-           params, 
-           eps=None, 
-           shape=None, 
-           sampling_temperature=1.0, 
-           key=jax.random.PRNGKey(0),
-           postprocess_fn=None, 
-           save_path=None,
-           display=True):
-    """Sampling only requires a call to the reverse pass of the model"""
-    if eps is None:
-        zL = jax.random.normal(key, shape) 
-    else: 
-        zL = eps[-1]
-    y, *_ = model.apply(params, zL, eps=eps, sampling_temperature=sampling_temperature, reverse=True)
-    if postprocess_fn is not None:
-        y = postprocess_fn(y)
-    plot_image_grid(y, save_path=save_path, display=display,
-                    title=None if save_path is None else save_path.rsplit('.', 1)[0].rsplit('/', 1)[-1])
-    return y
+# Data hyperparameters for 1 GPU training
+# Some small changes to the original model so 
+# everything fits in memory
+# In particular, I had  to use shallower
+# flows (smaller K value)
+config_dict = {
+    'image_path': "../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
+    'train_split': 0.7,
+    'image_size': 32,
+    'num_channels': 3,
+    'num_bits': 5,
+    'batch_size': 4,
+    'K': 32,
+    'L': 3,
+    'nn_width': 512, 
+    'learn_top_prior': True,
+    'sampling_temperature': 0.7,
+    'init_lr': 1e-3,
+    'num_epochs': 50,
+    'num_warmup_epochs': 1, # For learning rate warmup
+    'num_sample_epochs': 0.2, # Fractional epochs for sampling because one epoch is quite long 
+    'num_save_epochs': 5,
+    'num_samples': 9
+}
 
 import wandb
-wandb.init(project="research-nf", entity="cupca")
+
+wandb.init(project="research-nf", entity="cupca",config=config_dict)
+
+output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
+output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
+config_dict["sampling_shape"] = (output_hw, output_hw, output_c)
+
+import glob
+import tensorflow as tf
+import tensorflow_datasets as tfds
+tf.config.experimental.set_visible_devices([], 'GPU')
+
+def get_train_dataset(image_path, image_size, num_bits, batch_size, skip=None, **kwargs):
+    del kwargs
+    train_ds = tf.data.Dataset.list_files(f"{image_path}/*.jpg")
+    if skip is not None:
+        train_ds = train_ds.skip(skip)
+    train_ds = train_ds.shuffle(buffer_size=20000)
+    train_ds = train_ds.map(partial(map_fn, size=image_size, num_bits=num_bits, training=True))
+    train_ds = train_ds.batch(batch_size)
+    train_ds = train_ds.repeat()
+    return iter(tfds.as_numpy(train_ds))
+
+
+def get_val_dataset(image_path, image_size, num_bits, batch_size, 
+                    take=None, repeat=False, **kwargs):
+    del kwargs
+    val_ds = tf.data.Dataset.list_files(f"{image_path}/*.jpg")
+    if take is not None:
+        val_ds = val_ds.take(take)
+    val_ds = val_ds.map(partial(map_fn, size=image_size, num_bits=num_bits, training=False))
+    val_ds = val_ds.batch(batch_size)
+    if repeat:
+        val_ds = val_ds.repeat()
+    return iter(tfds.as_numpy(val_ds))
+
 
 def train_glow(train_ds,
                val_ds=None,
@@ -236,6 +154,10 @@ def train_glow(train_ds,
     params = model.init(random_key, next(train_ds))
     opt = flax.optim.Adam(learning_rate=init_lr).create(params)
     
+    # Summarize the final model
+    summarize_jax_model(params, max_depth=2)
+    
+    # Learning rate warmup 
     def lr_warmup(step):
         return init_lr * jnp.minimum(1., step / (num_warmup_epochs * steps_per_epoch + 1e-8))
     
@@ -325,63 +247,6 @@ def train_glow(train_ds,
         
     # returns final model and parameters
     return model, opt.target
-
-# Data hyperparameters for 1 GPU training
-# Some small changes to the original model so 
-# everything fits in memory
-# In particular, I had  to use shallower
-# flows (smaller K value)
-config_dict = {
-    'image_path': "../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
-    'train_split': 0.7,
-    'image_size': 64,
-    'num_channels': 3,
-    'num_bits': 5,
-    'batch_size': 4,
-    'K': 16,
-    'L': 3,
-    'nn_width': 512, 
-    'learn_top_prior': True,
-    'sampling_temperature': 0.7,
-    'init_lr': 1e-3,
-    'num_epochs': 50,
-    'num_warmup_epochs': 1,
-    'num_sample_epochs': 0.2, # Fractional epochs for sampling because one epoch is quite long 
-    'num_save_epochs': 5,
-}
-
-output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
-output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
-config_dict["sampling_shape"] = (output_hw, output_hw, output_c)
-
-import glob
-import tensorflow as tf
-import tensorflow_datasets as tfds
-tf.config.experimental.set_visible_devices([], 'GPU')
-
-def get_train_dataset(image_path, image_size, num_bits, batch_size, skip=None, **kwargs):
-    del kwargs
-    train_ds = tf.data.Dataset.list_files(f"{image_path}/*.jpg")
-    if skip is not None:
-        train_ds = train_ds.skip(skip)
-    train_ds = train_ds.shuffle(buffer_size=20000)
-    train_ds = train_ds.map(partial(map_fn, size=image_size, num_bits=num_bits, training=True))
-    train_ds = train_ds.batch(batch_size)
-    train_ds = train_ds.repeat()
-    return iter(tfds.as_numpy(train_ds))
-
-
-def get_val_dataset(image_path, image_size, num_bits, batch_size, 
-                    take=None, repeat=False, **kwargs):
-    del kwargs
-    val_ds = tf.data.Dataset.list_files(f"{image_path}/*.jpg")
-    if take is not None:
-        val_ds = val_ds.take(take)
-    val_ds = val_ds.map(partial(map_fn, size=image_size, num_bits=num_bits, training=False))
-    val_ds = val_ds.batch(batch_size)
-    if repeat:
-        val_ds = val_ds.repeat()
-    return iter(tfds.as_numpy(val_ds))
 
 
 num_images = len(glob.glob(f"{config_dict['image_path']}/*.jpg"))

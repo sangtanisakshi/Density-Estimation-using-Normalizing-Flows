@@ -1,0 +1,5 @@
+[default]
+entity = cupca
+project = research-nf
+base_url = https://api.wandb.ai
+

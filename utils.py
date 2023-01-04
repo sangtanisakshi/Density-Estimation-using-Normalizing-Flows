@@ -1,9 +1,28 @@
 import jax
 import flax
+import tensorflow as tf
 
 import numpy as np
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
+
+def map_fn(image_path, num_bits=5, size=256, training=True):
+    """Read image file, quantize and map to [-0.5, 0.5] range.
+    If num_bits = 8, there is no quantization effect."""
+    image = tf.io.decode_jpeg(tf.io.read_file(image_path))
+    # Resize input image
+    image = tf.cast(image, tf.float32)
+    image = tf.image.resize(image, (size, size))
+    image = tf.clip_by_value(image, 0., 255.)
+    # Discretize to the given number of bits
+    if num_bits < 8:
+        image = tf.floor(image / 2 ** (8 - num_bits))
+    # Send to [-1, 1]
+    num_bins = 2 ** num_bits
+    image = image / num_bins - 0.5
+    if training:
+        image = image + tf.random.uniform(tf.shape(image), 0, 1. / num_bins)
+    return image
 
 # Utils to display Jax model in a similar way as flax summary
 def get_params_size(v, s=0):
