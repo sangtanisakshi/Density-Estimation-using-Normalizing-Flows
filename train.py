@@ -1,10 +1,14 @@
 import jax
 import flax
-# import optax (change flax optimizer opt to optax)
+# import optax (#TODO - change flax optimizer opt to optax)
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
 import os
+
+print(jax.devices())
+##TODO - https://github.com/wandb/wandb/issues/4735
+jax.config.update('jax_array', False)
 import time
 import tensorflow as tf
 
@@ -45,27 +49,26 @@ def get_logpz(z, priors):
 config_dict = {
     'image_path': "../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
     'train_split': 0.7,
-    'image_size': 32,
+    'image_size': 64,
     'num_channels': 3,
-    'num_bits': 5,
-    'batch_size': 4,
+    'num_bits': 8,
+    'batch_size': 8,
     'K': 32,
-    'L': 3,
+    'L': 1,
     'nn_width': 512, 
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
-    'init_lr': 1e-3,
+    'init_lr': 1e-6,
     'num_epochs': 50,
-    'num_warmup_epochs': 1, # For learning rate warmup
-    'num_sample_epochs': 0.2, # Fractional epochs for sampling because one epoch is quite long 
+    'num_warmup_epochs': 3, # For learning rate warmup
+    'num_sample_epochs': 1, # Fractional epochs for sampling because one epoch is quite long 
     'num_save_epochs': 5,
-    'num_samples': 9
+    'num_samples': 10
 }
 
 import wandb
 
-wandb.init(project="research-nf", entity="cupca",config=config_dict)
-
+wandb.init(project="research-nf", entity="cupca", config=config_dict)
 output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
 output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
 config_dict["sampling_shape"] = (output_hw, output_hw, output_c)
@@ -231,17 +234,18 @@ def train_glow(train_ds,
             t = time.time() - start
             if val_ds is not None:
                 bits = eval_step(opt.target, next(val_ds))
+                wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1]})
+                wandb.log({"val_bpd":bits})
             print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                   f"[{int(t // 3600):02d}h {int((t % 3600) // 60):02d}mn]"
                   f" train_bits/dims = {loss[0]:.3f},"
                   f" val_bits/dims = {bits:.3f}" + " " * 50)
-            
-            wandb.log({"train bpd":loss[0],"val bpd":bits})
-       
+
             # Save parameters
             if (epoch + 1) % num_save_epochs == 0 or epoch == num_epochs - 1:
                 with open(f'weights/model_epoch={epoch + 1:03d}.weights', 'wb') as f:
                     f.write(flax.serialization.to_bytes(opt.target))
+    
     except KeyboardInterrupt:
         print(f"\nInterrupted by user at epoch {epoch + 1}")
         

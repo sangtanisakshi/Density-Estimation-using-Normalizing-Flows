@@ -1,3 +1,7 @@
 weights
 __pycache__
 samples
+results
+.vscode
+.ipynb_checkpoints
+wandb

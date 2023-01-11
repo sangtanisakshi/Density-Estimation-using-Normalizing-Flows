@@ -5,7 +5,10 @@ scikit-learn
 tensorflow-gpu
 tensorflow-datasets
 ipykernel
-tqdm
-scikit-image
+#tqdm
+#scikit-image
 wandb
 einops
+jax=0.4.1
+jaxlib=0.4.1
+flax=0.5.1

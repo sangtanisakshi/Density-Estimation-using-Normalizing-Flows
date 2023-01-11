@@ -1,6 +1,6 @@
 {
 
-"python.defaultInterpreterPath": "\\dhc\\home\\sakshi.sangtani\\conda3\\envs\\nf_jax\\python.exe",
+"python.defaultInterpreterPath": "\\dhc\\home\\sakshi.sangtani\\conda3\\envs\\jax_main\\python.exe",
 
 "python.terminal.activateEnvironment": true,
 

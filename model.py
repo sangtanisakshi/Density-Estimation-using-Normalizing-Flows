@@ -27,8 +27,8 @@ class FlowStep(nn.Module):
 ### Glow model
 class GLOW(nn.Module):
     K: int = 32                                       # Number of flow steps
-    L: int = 3                                        # Number of scales
-    nn_width: int = 512                               # NN width in Affine Coupling Layer
+    L: int = 3 #make it 1                              # Number of scales
+    nn_width: int = 512                               # NN width in Affine Coupling Layer 
     learn_top_prior: bool = False                     # If true, learn prior N(mu, sigma) for zL
     key: jax.random.PRNGKey = jax.random.PRNGKey(0)
         
