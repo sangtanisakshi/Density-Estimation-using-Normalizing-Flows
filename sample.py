@@ -38,23 +38,3 @@ def sample(model,
     plot_image_grid(y, save_path=save_path, display=display,
                     title=None if save_path is None else save_path.rsplit('.', 1)[0].rsplit('/', 1)[-1])
     return y
-
-# parser = argparse.ArgumentParser(description='Sample from pretrained model.')
-# parser.add_argument('num_samples', type=int, help='number of samples')
-# parser.add_argument('-t', '--temperature', default=0.7, type=float, help='Temperature')
-# parser.add_argument('-s', '--seed', type=int, default=0, help='random seed')
-# parser.add_argument('--model_path', type=str, default="pretrained/model_epoch=013.weights", help='Model path')
-# args = parser.parse_args()
-
-# model = GLOW(K=16, L=3, nn_width=512, learn_top_prior=True)
-
-# with open(args.model_path, 'rb') as f:
-#     params = model.init(PRNGKey(args.seed), jnp.zeros((
-#         args.num_samples, 64, 64, 3)))
-#     params = flax.serialization.from_bytes(params, f.read())
-    
-# sample(model, params, shape=(args.num_samples, 8, 8, 3 * 16),
-#        key=PRNGKey(args.seed), 
-#        sampling_temperature=args.temperature,
-#        postprocess_fn=partial(postprocess, num_bits=5),
-#        save_path=f"sample_seed={args.seed}_t={args.temperature}.png")'

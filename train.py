@@ -5,12 +5,17 @@ import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
 import os
+import argparse
+import glob
+import tensorflow as tf
+import tensorflow_datasets as tfds
 
 print(jax.devices())
-##TODO - https://github.com/wandb/wandb/issues/4735
+##TODO - remove this because it's if True then flax needs to be 0.6.1 or higher
+## possible that it might be making things slower because it only uses numpy array and not jax array
 jax.config.update('jax_array', False)
 import time
-import tensorflow as tf
+import wandb
 
 from functools import partial
 from matplotlib import pyplot as plt
@@ -21,6 +26,7 @@ from model import GLOW
 from utils import summarize_jax_model
 from utils import plot_image_grid
 from utils import map_fn
+from PIL import Image
 
 print('Jax version', jax.__version__)
 print('Flax version', flax.__version__)
@@ -41,6 +47,15 @@ def get_logpz(z, priors):
     return logpz
 
 
+parser = argparse.ArgumentParser(description='Training parameters')
+parser.add_argument('-n','--wb_name', type=str, help='WandB Run Name', required=False)
+parser.add_argument('-e','--epochs', default=20, type=int, help='Training Epochs', required=False)
+parser.add_argument('-img', '--img_size', type=int, default=64, help='Image Size', required=False)
+parser.add_argument('--nbits', type=int, default=8, help='Number of Bits', required=False)
+parser.add_argument('-b', '--batch_size', type=int, default=8, help='Batch Size', required=False)
+parser.add_argument('-msg', '--wb_desc', type=str, help='WandB Run Description', required=False)
+args = parser.parse_args()
+
 # Data hyperparameters for 1 GPU training
 # Some small changes to the original model so 
 # everything fits in memory
@@ -49,33 +64,28 @@ def get_logpz(z, priors):
 config_dict = {
     'image_path': "../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
     'train_split': 0.7,
-    'image_size': 64,
+    'image_size': args.img_size,
     'num_channels': 3,
-    'num_bits': 8,
-    'batch_size': 8,
+    'num_bits': args.nbits,
+    'batch_size': args.batch_size,
     'K': 32,
-    'L': 1,
+    'L': 3,     ## TODO: keep 1 for our architecture, otherwise original is 3
     'nn_width': 512, 
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
-    'init_lr': 1e-6,
-    'num_epochs': 50,
-    'num_warmup_epochs': 3, # For learning rate warmup
+    'init_lr': 1e-5,
+    'num_epochs': args.epochs,
+    'num_warmup_epochs': 1, # For learning rate warmup
     'num_sample_epochs': 1, # Fractional epochs for sampling because one epoch is quite long 
-    'num_save_epochs': 5,
-    'num_samples': 10
+    'num_save_epochs': 2,
+    'num_samples': 9
 }
 
-import wandb
-
-wandb.init(project="research-nf", entity="cupca", config=config_dict)
+wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc)
 output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
 output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
 config_dict["sampling_shape"] = (output_hw, output_hw, output_c)
 
-import glob
-import tensorflow as tf
-import tensorflow_datasets as tfds
 tf.config.experimental.set_visible_devices([], 'GPU')
 
 def get_train_dataset(image_path, image_size, num_bits, batch_size, skip=None, **kwargs):
@@ -134,7 +144,7 @@ def train_glow(train_ds,
         num_epochs: Numer of training epochs
         num_sample_epochs: Visualize sample at this interval
         num_warmup_epochs: Linear warmup of the learning rate to init_lr
-        num_save_epochs: save mode at this interval
+        num_save_epochs: save model at this interval
         steps_per_epochs: Number of steps per epochs
         K: Number of flow iterations in the GLOW model
         L: number of scales in the GLOW model
@@ -234,8 +244,7 @@ def train_glow(train_ds,
             t = time.time() - start
             if val_ds is not None:
                 bits = eval_step(opt.target, next(val_ds))
-                wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1]})
-                wandb.log({"val_bpd":bits})
+                wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1],"val_bpd":bits,"epoch":epoch})
             print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                   f"[{int(t // 3600):02d}h {int((t % 3600) // 60):02d}mn]"
                   f" train_bits/dims = {loss[0]:.3f},"
@@ -256,7 +265,7 @@ def train_glow(train_ds,
 num_images = len(glob.glob(f"{config_dict['image_path']}/*.jpg"))
 config_dict['steps_per_epoch'] = num_images // config_dict['batch_size']
 train_split = int(config_dict['train_split'] * num_images)
-print(f"{num_images} training images")
+print(f"{train_split} training images")
 print(f"{config_dict['steps_per_epoch']} training steps per epoch")
 
 #Train data
@@ -274,16 +283,21 @@ plot_image_grid(postprocess(next(val_ds), num_bits=config_dict['num_bits'])[:25]
 model, params = train_glow(train_ds, val_ds=val_ds, **config_dict)
 
 print("Random samples evolution during training")
-from PIL import Image
 
 # filepaths
 fp_in = "samples/step_*.png"
 fp_out = "sample_evolution.gif"
 
+li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob(fp_in))]
+wandb.log({"Samples during Training": [wandb.Image(img) for img in li_imgs]})
+
 # https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#gif
 img, *imgs = [Image.open(f) for f in sorted(glob.glob(fp_in))]
 img.save(fp=fp_out, format='GIF', append_images=imgs,
          save_all=True, duration=200, loop=0)
+
+rand_imgs = (np.asarray(f) for f in imgs)
+wandb.log({"Samples during Training": [wandb.Image(img) for img in rand_imgs]})
 
 def reconstruct(model, params, batch):
     global config_dict
@@ -293,8 +307,7 @@ def reconstruct(model, params, batch):
     plot_image_grid(postprocess(batch, config_dict["num_bits"]), title="original",display=False)
     plot_image_grid(rec, title="reconstructions",display=False)
     
-
-def interpolate(model, params, batch, num_samples=16):
+def interpolate(model, params, batch, num_samples=16, save_loc="~/results/lin_int.jpg"):
     global config_dict
     i1, i2 = np.random.choice(range(batch.shape[0]), size=2, replace=False)
     in_ = np.stack([batch[i1], batch[i2]], axis=0)
@@ -307,32 +320,37 @@ def interpolate(model, params, batch, num_samples=16):
         interpolated_z.append(interpolate)
     rec, *_ = model.apply(params, interpolated_z[-1], z=interpolated_z, reverse=True)
     rec = postprocess(rec, config_dict["num_bits"])
-    plot_image_grid(rec, title="Linear interpolation",display=False)
+    plot_image_grid(rec, title="Linear interpolation",display=False,save_path=save_loc)
+    return 
 
 batch = next(val_ds)
 reconstruct(model, params, batch)
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"],  key=random_key,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="samples/final_random_sample_T=1.png");
+       save_path="results/final_random_sample_T=1.png");
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(1), sampling_temperature=0.7,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="samples/final_random_sample_T=0.7.png");
+       save_path="results/final_random_sample_T=0.7.png");
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(2), sampling_temperature=0.7,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="samples/final_random_sample_T=0.7.png");
+       save_path="results/final_random_sample_T=0.7.png");
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(3), sampling_temperature=0.5,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="samples/final_random_sample_T=0.5.png");
+       save_path="results/final_random_sample_T=0.5.png");
 
-interpolate(model, params, batch)
+sample_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob("results/final_random_sample_T*.png"))]
+wandb.log({"Random samples": [wandb.Image(img) for img in sample_imgs]})
 
-interpolate(model, params, batch)
+interpolate(model, params, batch, save_loc="results/lin_int_1.png")
 
+interpolate(model, params, batch, save_loc="results/lin_int_2.png")
 
+li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob("results/lin_int_*.png"))]
+wandb.log({"Linear Interpolation": [wandb.Image(img) for img in li_imgs]})

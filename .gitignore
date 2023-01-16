@@ -5,3 +5,4 @@ results
 .vscode
 .ipynb_checkpoints
 wandb
+sample_evolution.gif
