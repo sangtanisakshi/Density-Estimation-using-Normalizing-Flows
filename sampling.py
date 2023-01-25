@@ -3,10 +3,10 @@ import jax.numpy as jnp
 import flax
 import jax
 
-from model import GLOW
+from model_og.model import GLOW
 
 import argparse
-from utils import plot_image_grid
+from model_og.utils import plot_image_grid
 from functools import partial
 
 @jax.jit
@@ -46,7 +46,7 @@ parser.add_argument('-s', '--seed', type=int, default=0, help='random seed')
 parser.add_argument('--model_path', type=str, default="pretrained/model_epoch=013.weights", help='Model path')
 args = parser.parse_args()
 
-model = GLOW(K=16, L=3, nn_width=512, learn_top_prior=True)
+model = GLOW(K=32, L=3, nn_width=512, learn_top_prior=True)
 
 with open(args.model_path, 'rb') as f:
     params = model.init(PRNGKey(args.seed), jnp.zeros((

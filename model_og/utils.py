@@ -54,9 +54,11 @@ def summarize_jax_model(variables,
             print('-' * (col1_size + col2_size))
             
             
-def plot_image_grid(y, title=None, display=True, save_path=None, figsize=(10, 10)):
+def plot_image_grid(y, title=None, display=True, save_path=None, figsize=(10, 10),recon=False):
     """Plot and optionally save an image grid with matplotlib"""
     fig = plt.figure(figsize=figsize)
+    if recon == True:
+        num_rows = int(np.floor((np.sqrt(y.shape[0]))/4))
     num_rows = int(np.floor(np.sqrt(y.shape[0])))
     grid = ImageGrid(fig, 111, nrows_ncols=(num_rows, num_rows), axes_pad=0.1)
     for ax in grid: 

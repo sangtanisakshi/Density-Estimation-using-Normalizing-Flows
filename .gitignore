@@ -1,8 +1,9 @@
 weights
 __pycache__
-samples
 results
+samples
 .vscode
 .ipynb_checkpoints
 wandb
 sample_evolution.gif
+model_nf

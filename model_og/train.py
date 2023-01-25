@@ -33,6 +33,16 @@ print('Flax version', flax.__version__)
 
 random_key = jax.random.PRNGKey(0)
 
+parser = argparse.ArgumentParser(description='Training parameters')
+parser.add_argument('-n','--wb_name', type=str, help='WandB Run Name', required=False)
+parser.add_argument('-e','--epochs', default=70, type=int, help='Training Epochs', required=False)
+parser.add_argument('-img', '--img_size', type=int, default=32, help='Image Size', required=False)
+parser.add_argument('--nbits', type=int, default=8, help='Number of Bits', required=False)
+parser.add_argument('-b', '--batch_size', type=int, default=32, help='Batch Size', required=False)
+parser.add_argument('-m', '--wb_desc', type=str, help='WandB Run Description', required=False)
+parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3, help='Learning Rate', required=False)
+args = parser.parse_args()
+
 @jax.vmap
 def get_logpz(z, priors):
     logpz = 0
@@ -46,42 +56,32 @@ def get_logpz(z, priors):
                          - 0.5 * (zi - mu) ** 2 / jnp.exp(2 * logsigma))
     return logpz
 
-
-parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-n','--wb_name', type=str, help='WandB Run Name', required=False)
-parser.add_argument('-e','--epochs', default=20, type=int, help='Training Epochs', required=False)
-parser.add_argument('-img', '--img_size', type=int, default=64, help='Image Size', required=False)
-parser.add_argument('--nbits', type=int, default=8, help='Number of Bits', required=False)
-parser.add_argument('-b', '--batch_size', type=int, default=8, help='Batch Size', required=False)
-parser.add_argument('-msg', '--wb_desc', type=str, help='WandB Run Description', required=False)
-args = parser.parse_args()
-
 # Data hyperparameters for 1 GPU training
 # Some small changes to the original model so 
 # everything fits in memory
 # In particular, I had  to use shallower
 # flows (smaller K value)
 config_dict = {
-    'image_path': "../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
-    'train_split': 0.7,
+    'image_path': "../../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
+    'train_split': 0.8,
     'image_size': args.img_size,
     'num_channels': 3,
     'num_bits': args.nbits,
     'batch_size': args.batch_size,
-    'K': 32,
+    'K': 48,
     'L': 3,     ## TODO: keep 1 for our architecture, otherwise original is 3
     'nn_width': 512, 
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
-    'init_lr': 1e-5,
+    'init_lr': args.learning_rate,
     'num_epochs': args.epochs,
-    'num_warmup_epochs': 1, # For learning rate warmup
+    'num_warmup_epochs': 8, # For learning rate warmup
     'num_sample_epochs': 1, # Fractional epochs for sampling because one epoch is quite long 
-    'num_save_epochs': 2,
+    'num_save_epochs': 1,
     'num_samples': 9
 }
 
-wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc)
+wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc, dir="../")
 output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
 output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
 config_dict["sampling_shape"] = (output_hw, output_hw, output_c)
@@ -112,6 +112,13 @@ def get_val_dataset(image_path, image_size, num_bits, batch_size,
         val_ds = val_ds.repeat()
     return iter(tfds.as_numpy(val_ds))
 
+##Make all directories
+weights_loc ="../weights/"+args.wb_name+"/"
+if not os.path.exists(weights_loc): os.makedirs(weights_loc)
+fp = "../samples/"+args.wb_name+"/"
+if not os.path.exists(fp): os.makedirs(fp)
+results_loc = "../results/"+args.wb_name+"/"
+if not os.path.exists(results_loc): os.makedirs(results_loc)
 
 def train_glow(train_ds,
                val_ds=None,
@@ -166,7 +173,7 @@ def train_glow(train_ds,
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
     opt = flax.optim.Adam(learning_rate=init_lr).create(params)
-    
+    ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
     summarize_jax_model(params, max_depth=2)
     
@@ -202,8 +209,6 @@ def train_glow(train_ds,
     
     # Helper function for sampling from random latent fixed during training for comparison
     eps = []
-    if not os.path.exists("samples"): os.makedirs("samples")
-    if not os.path.exists("weights"): os.makedirs("weights")
     for i in range(L):
         expected_h = image_size // 2**(i + 1)
         expected_c = num_channels * 2**(i + 1)
@@ -237,7 +242,7 @@ def train_glow(train_ds,
                 step = epoch * steps_per_epoch + i + 1
                 if step % int(num_sample_epochs * steps_per_epoch) == 0:
                     sample_fn(model, opt.target, 
-                              save_path=f"samples/step_{step:05d}.png")
+                              save_path=f(fp+"step_{step:05d}.png"))
 
             # eval on one batch of validation samples 
             # + generate random sample
@@ -252,7 +257,7 @@ def train_glow(train_ds,
 
             # Save parameters
             if (epoch + 1) % num_save_epochs == 0 or epoch == num_epochs - 1:
-                with open(f'weights/model_epoch={epoch + 1:03d}.weights', 'wb') as f:
+                with open(f(weights_loc+'/model_epoch={epoch + 1:03d}.weights'), 'wb') as f:
                     f.write(flax.serialization.to_bytes(opt.target))
     
     except KeyboardInterrupt:
@@ -285,8 +290,8 @@ model, params = train_glow(train_ds, val_ds=val_ds, **config_dict)
 print("Random samples evolution during training")
 
 # filepaths
-fp_in = "samples/step_*.png"
-fp_out = "sample_evolution.gif"
+fp_in = fp+"step_*.png"
+fp_out = "../sample_evolution" + "_" + args.wb_name + ".gif"
 
 li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob(fp_in))]
 wandb.log({"Samples during Training": [wandb.Image(img) for img in li_imgs]})
@@ -299,15 +304,17 @@ img.save(fp=fp_out, format='GIF', append_images=imgs,
 rand_imgs = (np.asarray(f) for f in imgs)
 wandb.log({"Samples during Training": [wandb.Image(img) for img in rand_imgs]})
 
-def reconstruct(model, params, batch):
+def reconstruct(model, params, batch, save_loc):
     global config_dict
     x, z, logdets, priors = model.apply(params, batch, reverse=False)
     rec, *_ = model.apply(params, z[-1], z=z, reverse=True)
     rec = postprocess(rec, config_dict["num_bits"])
-    plot_image_grid(postprocess(batch, config_dict["num_bits"]), title="original",display=False)
-    plot_image_grid(rec, title="reconstructions",display=False)
+    og_path = save_loc+"original.png"
+    rec_path = save_loc+"reconstruction.png"
+    plot_image_grid(postprocess(batch, config_dict["num_bits"]), title="original",display=False,save_path=og_path,recon=True)
+    plot_image_grid(rec, title="reconstructions",display=False,save_path=rec_path,recon=True)
     
-def interpolate(model, params, batch, num_samples=16, save_loc="~/results/lin_int.jpg"):
+def interpolate(model, params, batch, save_loc, num_samples=16):
     global config_dict
     i1, i2 = np.random.choice(range(batch.shape[0]), size=2, replace=False)
     in_ = np.stack([batch[i1], batch[i2]], axis=0)
@@ -321,36 +328,40 @@ def interpolate(model, params, batch, num_samples=16, save_loc="~/results/lin_in
     rec, *_ = model.apply(params, interpolated_z[-1], z=interpolated_z, reverse=True)
     rec = postprocess(rec, config_dict["num_bits"])
     plot_image_grid(rec, title="Linear interpolation",display=False,save_path=save_loc)
-    return 
+
 
 batch = next(val_ds)
 reconstruct(model, params, batch)
+rec_img = np.asarray(Image.open((results_loc+"reconstruction.png")))
+wandb.log({"Reconstruction": wandb.Image(rec_img)})
+og_img = np.asarray(Image.open((results_loc+"original.png")))
+wandb.log({"Original Image": wandb.Image(og_img)})
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"],  key=random_key,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="results/final_random_sample_T=1.png");
+       save_path=(results_loc+"final_random_sample_T=1.png"));
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(1), sampling_temperature=0.7,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="results/final_random_sample_T=0.7.png");
+       save_path=(results_loc+"final_random_sample_T=0.7_1.png"));
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(2), sampling_temperature=0.7,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="results/final_random_sample_T=0.7.png");
+       save_path=(results_loc+"final_random_sample_T=0.7_2.png"))
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(3), sampling_temperature=0.5,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
-       save_path="results/final_random_sample_T=0.5.png");
+       save_path=(results_loc+"final_random_sample_T=0.5.png"))
 
-sample_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob("results/final_random_sample_T*.png"))]
+sample_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob((results_loc+"final_random_sample_T*.png")))]
 wandb.log({"Random samples": [wandb.Image(img) for img in sample_imgs]})
 
-interpolate(model, params, batch, save_loc="results/lin_int_1.png")
+interpolate(model, params, batch, save_loc=(results_loc+"lin_int_1.png"))
 
-interpolate(model, params, batch, save_loc="results/lin_int_2.png")
+interpolate(model, params, batch, save_loc=(results_loc+"lin_int_2.png"))
 
-li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob("results/lin_int_*.png"))]
+li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob((results_loc+"lin_int_*.png")))]
 wandb.log({"Linear Interpolation": [wandb.Image(img) for img in li_imgs]})
