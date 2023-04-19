@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 from layers import ConvZeros
 from layers import ActNorm, Conv1x1, AffineCoupling
-from layers import squeeze, unsqueeze, Split
+from layers import Split
 
 ### Flow
 class FlowStep(nn.Module):
@@ -14,13 +14,13 @@ class FlowStep(nn.Module):
     def __call__(self, x, logdet=0, reverse=False):
         out_dims = x.shape[-1]
         if not reverse:
-            x, logdet = ActNorm()(x, logdet=logdet, reverse=False)
+            #x, logdet = ActNorm()(x, logdet=logdet, reverse=False)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=False)
             x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=False)
         else:
             x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=True)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=True)
-            x, logdet = ActNorm()(x, logdet=logdet, reverse=True)
+            #x, logdet = ActNorm()(x, logdet=logdet, reverse=True)
         return x, logdet
     
     
@@ -83,7 +83,6 @@ class GLOW(nn.Module):
         for l in range(self.L):
             # Forward
             if not reverse:
-                x = squeeze(x)
                 x, logdet = self.flows(x, logdet=logdet,
                                        reverse=False,
                                        name=f"flow_scale_{l + 1}/")
@@ -107,7 +106,6 @@ class GLOW(nn.Module):
                         temperature=sampling_temperature)
                 x, logdet = self.flows(x, logdet=logdet, reverse=True,
                                        name=f"flow_scale_{self.L - l}/")
-                x = unsqueeze(x)
                 
         ## Return
         return x, z, logdet, priors

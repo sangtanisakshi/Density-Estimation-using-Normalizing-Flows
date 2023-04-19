@@ -1,32 +1,11 @@
+import operator
 import jax
 import flax
 import jax.numpy as jnp
 import flax.linen as nn
-import operator
+import random
 from functools import reduce
-
-
-### From one scale to another: squeeze / unsqueeze
-def squeeze(x):
-    x = jnp.reshape(x, (x.shape[0], 
-                        x.shape[1] // 2, 2, 
-                        x.shape[2] // 2, 2,
-                        x.shape[-1]))
-    x = jnp.transpose(x, (0, 1, 3, 2, 4, 5))
-    x = jnp.reshape(x, x.shape[:3] + (4 * x.shape[-1],))
-    return x
-
-
-def unsqueeze(x):
-    x = jnp.reshape(x, (x.shape[0], x.shape[1], x.shape[2], 
-                        2, 2, x.shape[-1] // 4))
-    x = jnp.transpose(x, (0, 1, 3, 2, 4, 5))
-    x = jnp.reshape(x, (x.shape[0], 
-                        2 * x.shape[1],
-                        2 * x.shape[3],
-                        x.shape[5]))
-    return x
-
+from einops import rearrange, reduce, repeat
 
 ### From one scale to another: split / unsplit, with learnable prior
 class ConvZeros(nn.Module):
@@ -77,8 +56,7 @@ class Split(nn.Module):
         # Forward mode: Also return the prior as it is used to compute the loss
         else:
             return z, x, prior
-        
-        
+    
 ### Affine Coupling 
 class AffineCoupling(nn.Module):
     out_dims: int
@@ -87,31 +65,45 @@ class AffineCoupling(nn.Module):
     
     @nn.compact
     def __call__(self, inputs, logdet=0, reverse=False):
-        # Split
-        xa, xb = jnp.split(inputs, 2, axis=-1)
-        #(64,16,16,12) -> (64,16,16,6)
+        
+        random_patch = random.randint(0,15)
+        #inputs.shape = (batch_size,250,250,3) if the image has not been scaled down, otherwise it will be (batch_size,32,32,3)
+        # We select one scaled image out of a batch, and now divide it into 16 patches. O/P dimension here = (batch_size,16,8,8,3)
+        all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=8, wp=8) #Assuming that image is scaled. For 250*250, hp=wp=50 for 25 patches
+        chosen_patch = all_patches[:,random_patch,:,:,:] #shape = (batch_size,8,8,3)
+        x_chosen = jnp.expand_dims(chosen_patch,axis=1) #shape = (batch_size,1,8,8,3)
+        x_rest =  jnp.delete(all_patches,random_patch,axis=1) #(batch_size,15,8,8,3)
+
+        
         # NN
-        net = nn.Conv(features=self.width, kernel_size=(3, 3), strides=(1, 1),
-                      padding='same', name="ACL_conv_1")(xb)
+        net = nn.Conv(features=self.width, kernel_size=(4, 4), strides=(1, 1),
+                      padding='same', name="ACL_conv_1")(x_chosen) # o/p shape = (batch_size,1,8,8,self.width)
         net = nn.relu(net)
         net = nn.Conv(features=self.width, kernel_size=(1, 1), strides=(1, 1),
                       padding='same', name="ACL_conv_2")(net)
         net = nn.relu(net)
-        net = ConvZeros(self.out_dims, name="ACL_conv_out")(net)
-        mu, logsigma = jnp.split(net, 2, axis=-1)
+        net = ConvZeros(self.out_dims, name="ACL_conv_out")(net) # o/p shape = (batch_size,1,8,8,3) so the division of mu,logsigma is not possible
+        #TODO
+        mu, logsigma = jnp.split(net, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
+        
+        #Hard coded the sizes for now
+        mu = jnp.broadcast_to(mu[:, jnp.newaxis, jnp.newaxis, jnp.newaxis, jnp.newaxis],(256, 15, 8, 8, 3))
+        logsigma = jnp.broadcast_to(logsigma[:, jnp.newaxis, jnp.newaxis, jnp.newaxis, jnp.newaxis],(256, 15, 8, 8, 3))
+        # shape of mu and logsigma = (batch_size,1,8,8,3)
         # See https://github.com/openai/glow/blob/master/model.py#L376
         # sigma = jnp.exp(logsigma)
         sigma = jax.nn.sigmoid(logsigma + 2.)
         
+        
         # Merge
         if not reverse:
-            ya = sigma * xa + mu
-            logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+            ya = sigma * x_rest + mu #ya= sigma*(batch_size,15,8,8,3)+mu
+            logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
         else:
-            ya = (xa - mu) / (sigma + self.eps)
-            logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+            ya = (x_rest - mu) / (sigma + self.eps)
+            logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
             
-        y = jnp.concatenate((ya, xb), axis=-1)
+        y = jnp.concatenate((ya, x_chosen), axis=1)
         return y, logdet
     
     

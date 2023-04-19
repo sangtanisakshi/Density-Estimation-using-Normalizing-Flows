@@ -1,4 +1,3 @@
-
 import jax
 import flax
 import optax
@@ -8,10 +7,9 @@ import numpy as np
 import os
 import argparse
 import glob
+import yaml
 import tensorflow as tf
 import tensorflow_datasets as tfds
-
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "FALSE"
 
 print(jax.devices())
 ##TODO - remove this because it's if True then flax needs to be 0.6.1 or higher
@@ -37,13 +35,9 @@ print('Flax version', flax.__version__)
 random_key = jax.random.PRNGKey(0)
 
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-n','--wb_name', default="trial-test", type=str, help='WandB Run Name', required=False)
-parser.add_argument('-e','--epochs', default=2, type=int, help='Training Epochs', required=False)
-parser.add_argument('-img', '--img_size', type=int, default=32, help='Image Size', required=False)
-parser.add_argument('--nbits', type=int, default=8, help='Number of Bits', required=False)
-parser.add_argument('-b', '--batch_size', type=int, default=256, help='Batch Size', required=False)
-parser.add_argument('-m', '--wb_desc', type=str, help='WandB Run Description', required=False)
-parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3, help='Learning Rate', required=False)
+parser.add_argument('-name','--wb_name', default="trial-test", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-desc', '--wb_desc', type=str, help='WandB Run Description', required=False)
+parser.add_argument('-hpo', '--hpo', default=False, type=bool, help='Hyperparameter Optimization', required=False)
 args = parser.parse_args()
 
 @jax.vmap
@@ -61,26 +55,31 @@ def get_logpz(z, priors):
 
 # Data hyperparameters for 1 GPU training
 config_dict = {
-    'image_path': "/dhc/home/sakshi.sangtani/lfw/lfw-deepfunneled/lfw-deepfunneled/*",
+    'image_path': "../../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
     'train_split': 0.8,
-    'image_size': args.img_size,
+    'image_size': 32,
     'num_channels': 3,
-    'num_bits': args.nbits,
-    'batch_size': args.batch_size,
+    'num_bits': 8,
+    'batch_size': 256,
     'K': 16,
-    'L': 3,     ## TODO: keep 1 for our architecture, otherwise original is 3
+    'L': 1,
     'nn_width': 512, 
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
-    'init_lr': args.learning_rate,
-    'num_epochs': args.epochs,
+    'init_lr': 1e-3,
+    'num_epochs': 5,
     'num_warmup_epochs': 8, # For learning rate warmup
     'num_sample_epochs': 5, # Fractional epochs for sampling because one epoch is quite long 
     'num_save_epochs': 1,
     'num_samples': 9
 }
 
-# Initialize WandB logging
+# Hyperparameter Optimization
+#if args.hpo == true:
+#   with open('./wandb_sweep.yaml') as file:
+#       hpo_config = yaml.load(file, Loader=yaml.FullLoader)
+
+#Initialize WandB
 wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc, dir="../")
 
 output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
@@ -126,15 +125,15 @@ def train_glow(train_ds,
                num_samples=9,
                image_size=256,
                num_channels=3,
-               num_bits=5,
+               num_bits=8,
                init_lr=1e-3,
                num_epochs=1,
                num_sample_epochs=1,
                num_warmup_epochs=10,
                num_save_epochs=2,
                steps_per_epoch=1,
-               K=32,
-               L=3,
+               K=48,
+               L=1,
                nn_width=512,
                sampling_temperature=0.7,
                learn_top_prior=True,
@@ -173,7 +172,7 @@ def train_glow(train_ds,
     
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
-    opt = optax.adam(learning_rate=init_lr)
+    opt = optax.adamw(learning_rate=init_lr)
     opt_state = opt.init(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
@@ -203,7 +202,7 @@ def train_glow(train_ds,
         updates, opt_state = opt.update(grad, opt_state)
         params = optax.apply_updates(params, updates)
         return params, logs, opt_state
-
+    
     # Helper functions for evaluation 
     @jax.jit
     def eval_step(params, batch):
@@ -244,14 +243,14 @@ def train_glow(train_ds,
                 
                 step = epoch * steps_per_epoch + i + 1
                 if step % int(num_sample_epochs * steps_per_epoch) == 0:
-                    sample_fn(model, opt.target, 
+                    sample_fn(model, params, 
                               save_path=(fp + f"step_{step:05d}.png"))
 
             # eval on one batch of validation samples 
             # + generate random sample
             t = time.time() - start
             if val_ds is not None:
-                bits = eval_step(opt.target, next(val_ds))
+                bits = eval_step(params, next(val_ds))
                 wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1],"val_bpd":bits,"epoch":epoch})
             print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                   f"[{int(t // 3600):02d}h {int((t % 3600) // 60):02d}mn]"
@@ -261,13 +260,13 @@ def train_glow(train_ds,
             # Save parameters
             if (epoch + 1) % num_save_epochs == 0 or epoch == num_epochs - 1:
                 with open((weights_loc+f'model_epoch={epoch + 1:03d}.weights'), 'wb') as f:
-                    f.write(flax.serialization.to_bytes(opt.target))
+                    f.write(flax.serialization.to_bytes(params))
     
     except KeyboardInterrupt:
         print(f"\nInterrupted by user at epoch {epoch + 1}")
         
     # returns final model and parameters
-    return model, opt.target
+    return model, params
 
 
 num_images = len(glob.glob(f"{config_dict['image_path']}/*.jpg"))
@@ -333,36 +332,3 @@ sample(model, params, shape=(16,) + config_dict["sampling_shape"],
 
 sample_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob((results_loc+"final_random_sample_T*.png")))]
 wandb.log({"Random samples": [wandb.Image(img) for img in sample_imgs]})
-
-# def reconstruct(model, params, batch, save_loc):
-#     global config_dict
-#     x, z, logdets, priors = model.apply(params, batch, reverse=False)
-#     rec, *_ = model.apply(params, z[-1], z=z, reverse=True)
-#     rec = postprocess(rec, config_dict["num_bits"])
-#     og_path = save_loc+"original.png"
-#     rec_path = save_loc+"reconstruction.png"
-#     plot_image_grid(postprocess(batch, config_dict["num_bits"]), title="original",display=False,save_path=og_path,recon=True)
-#     plot_image_grid(rec, title="reconstructions",display=False,save_path=rec_path,recon=True)
-    
-# def interpolate(model, params, batch, save_loc, num_samples=16):
-#     global config_dict
-#     i1, i2 = np.random.choice(range(batch.shape[0]), size=2, replace=False)
-#     in_ = np.stack([batch[i1], batch[i2]], axis=0)
-#     x, z, logdets, priors = model.apply(params, in_, reverse=False)
-#     # interpolate
-#     interpolated_z = []
-#     for zi in z:
-#         z_1, z_2 = zi[:2]
-#         interpolate = jnp.array([t * z_1 + (1 - t) * z_2 for t in np.linspace(0., 1., 16)])
-#         interpolated_z.append(interpolate)
-#     rec, *_ = model.apply(params, interpolated_z[-1], z=interpolated_z, reverse=True)
-#     rec = postprocess(rec, config_dict["num_bits"])
-#     plot_image_grid(rec, title="Linear interpolation",display=False,save_path=save_loc)
-
-
-# batch = next(val_ds)
-# reconstruct(model, params, batch, results_loc)
-# rec_img = np.asarray(Image.open((results_loc+"reconstruction.png")))
-# wandb.log({"Reconstruction": wandb.Image(rec_img)})
-# og_img = np.asarray(Image.open((results_loc+"original.png")))
-# wandb.log({"Original Image": wandb.Image(og_img)})
