@@ -1,13 +1,11 @@
 import jax
 import flax
-import optax
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
 import os
 import argparse
 import glob
-import yaml
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
@@ -37,7 +35,7 @@ random_key = jax.random.PRNGKey(0)
 parser = argparse.ArgumentParser(description='Training parameters')
 parser.add_argument('-name','--wb_name', default="trial-test", type=str, help='WandB Run Name', required=False)
 parser.add_argument('-desc', '--wb_desc', type=str, help='WandB Run Description', required=False)
-parser.add_argument('-hpo', '--hpo', default=False, type=bool, help='Hyperparameter Optimization', required=False)
+#parser.add_argument('-hpo', '--hpo', default=False, type=bool, help='Hyperparameter Optimization', required=False)
 args = parser.parse_args()
 
 @jax.vmap
@@ -55,7 +53,7 @@ def get_logpz(z, priors):
 
 # Data hyperparameters for 1 GPU training
 config_dict = {
-    'image_path': "../../lfw/lfw-deepfunneled/lfw-deepfunneled/*",
+    'image_path': "/dhc/home/sakshi.sangtani/lfw/lfw-deepfunneled/lfw-deepfunneled/*",
     'train_split': 0.8,
     'image_size': 32,
     'num_channels': 3,
@@ -63,7 +61,7 @@ config_dict = {
     'batch_size': 256,
     'K': 16,
     'L': 1,
-    'nn_width': 512, 
+    'nn_width': 512,
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
     'init_lr': 1e-3,
@@ -172,8 +170,7 @@ def train_glow(train_ds,
     
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
-    opt = optax.adamw(learning_rate=init_lr)
-    opt_state = opt.init(params)
+    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=0.0001).init(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
     summarize_jax_model(params, max_depth=2)
@@ -192,16 +189,26 @@ def train_glow(train_ds,
         logpx = logpz + logdets - num_bits                  # num_bits: dequantization factor
         return logpx, logpz, logdets
         
+    # @jax.jit
+    # def train_step(params, opt_state, batch):
+    #     def loss_fn(params):
+    #         _, z, logdets, priors = model.apply(params, batch, reverse=False)
+    #         logpx, logpz, logdets = get_logpx(z, logdets, priors)
+    #         return - logpx, (logpz, logdets)
+    #     logs, grad = jax.value_and_grad(loss_fn, has_aux=True)(params)
+    #     updates, opt_state = opt.update(grad, opt_state, params)
+    #     params = optax.apply_updates(params, updates)
+    #     return params, logs, opt_state
+    
     @jax.jit
-    def train_step(params, opt_state, batch):
+    def train_step(opt, batch):
         def loss_fn(params):
             _, z, logdets, priors = model.apply(params, batch, reverse=False)
             logpx, logpz, logdets = get_logpx(z, logdets, priors)
             return - logpx, (logpz, logdets)
-        logs, grad = jax.value_and_grad(loss_fn, has_aux=True)(params)
-        updates, opt_state = opt.update(grad, opt_state)
-        params = optax.apply_updates(params, updates)
-        return params, logs, opt_state
+        logs, grad = jax.value_and_grad(loss_fn, has_aux=True)(opt.target)
+        opt = opt.apply_gradient(grad, learning_rate=lr_warmup(opt.state.step))
+        return logs, opt
     
     # Helper functions for evaluation 
     @jax.jit
@@ -231,7 +238,7 @@ def train_glow(train_ds,
             # train
             for i in range(steps_per_epoch):
                 batch = next(train_ds)
-                params, loss, opt = train_step(params, opt_state, batch)
+                loss, opt = train_step(opt, batch)
                 print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                       f"\033[93m[Batch {i + 1}/{steps_per_epoch}]\033[0m"
                       f" loss = {loss[0]:.5f},"
@@ -243,14 +250,14 @@ def train_glow(train_ds,
                 
                 step = epoch * steps_per_epoch + i + 1
                 if step % int(num_sample_epochs * steps_per_epoch) == 0:
-                    sample_fn(model, params, 
+                    sample_fn(model, opt.target, 
                               save_path=(fp + f"step_{step:05d}.png"))
 
             # eval on one batch of validation samples 
             # + generate random sample
             t = time.time() - start
             if val_ds is not None:
-                bits = eval_step(params, next(val_ds))
+                bits = eval_step(opt.target, next(val_ds))
                 wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1],"val_bpd":bits,"epoch":epoch})
             print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                   f"[{int(t // 3600):02d}h {int((t % 3600) // 60):02d}mn]"
@@ -260,13 +267,13 @@ def train_glow(train_ds,
             # Save parameters
             if (epoch + 1) % num_save_epochs == 0 or epoch == num_epochs - 1:
                 with open((weights_loc+f'model_epoch={epoch + 1:03d}.weights'), 'wb') as f:
-                    f.write(flax.serialization.to_bytes(params))
+                    f.write(flax.serialization.to_bytes(opt.target))
     
     except KeyboardInterrupt:
         print(f"\nInterrupted by user at epoch {epoch + 1}")
         
     # returns final model and parameters
-    return model, params
+    return model, opt.target
 
 
 num_images = len(glob.glob(f"{config_dict['image_path']}/*.jpg"))

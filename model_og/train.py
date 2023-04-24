@@ -170,11 +170,10 @@ def train_glow(train_ds,
                  nn_width=config_dict['nn_width'], 
                  learn_top_prior=learn_top_prior,
                  key=key)
-    
+
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
-    opt = optax.adam(learning_rate=init_lr)
-    opt_state = opt.init(params)
+    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=0.0001).init(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
     summarize_jax_model(params, max_depth=2)
@@ -194,15 +193,14 @@ def train_glow(train_ds,
         return logpx, logpz, logdets
         
     @jax.jit
-    def train_step(params, opt_state, batch):
+    def train_step(opt, batch):
         def loss_fn(params):
             _, z, logdets, priors = model.apply(params, batch, reverse=False)
             logpx, logpz, logdets = get_logpx(z, logdets, priors)
             return - logpx, (logpz, logdets)
-        logs, grad = jax.value_and_grad(loss_fn, has_aux=True)(params)
-        updates, opt_state = opt.update(grad, opt_state)
-        params = optax.apply_updates(params, updates)
-        return params, logs, opt_state
+        logs, grad = jax.value_and_grad(loss_fn, has_aux=True)(opt.target)
+        opt = opt.apply_gradient(grad, learning_rate=lr_warmup(opt.state.step))
+        return logs, opt
 
     # Helper functions for evaluation 
     @jax.jit
@@ -232,7 +230,7 @@ def train_glow(train_ds,
             # train
             for i in range(steps_per_epoch):
                 batch = next(train_ds)
-                params, loss, opt = train_step(params, opt_state, batch)
+                loss, opt = train_step(opt, batch)
                 print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                       f"\033[93m[Batch {i + 1}/{steps_per_epoch}]\033[0m"
                       f" loss = {loss[0]:.5f},"

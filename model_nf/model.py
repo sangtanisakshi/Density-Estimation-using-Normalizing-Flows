@@ -14,13 +14,13 @@ class FlowStep(nn.Module):
     def __call__(self, x, logdet=0, reverse=False):
         out_dims = x.shape[-1]
         if not reverse:
-            #x, logdet = ActNorm()(x, logdet=logdet, reverse=False)
+      #     x, logdet = ActNorm()(x, logdet=logdet, reverse=False)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=False)
             x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=False)
         else:
             x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=True)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=True)
-            #x, logdet = ActNorm()(x, logdet=logdet, reverse=True)
+      #     x, logdet = ActNorm()(x, logdet=logdet, reverse=True)
         return x, logdet
     
     
