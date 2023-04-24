@@ -72,24 +72,29 @@ class AffineCoupling(nn.Module):
         # We select one scaled image out of a batch, and now divide it into 16 patches. O/P dimension here = (batch_size,16,8,8,3)
         all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=8, wp=8) #Assuming that image is scaled. For 250*250, hp=wp=50 for 25 patches
         chosen_patch = all_patches[:,random_patch,:,:,:] #shape = (batch_size,8,8,3)
-        x_chosen = jnp.expand_dims(chosen_patch,axis=1) #shape = (batch_size,1,8,8,3)
+        x_chosen = jnp.expand_dims(chosen_patch,axis=1) #output shape = (batch_size,1,8,8,3)
         x_rest =  jnp.delete(all_patches,random_patch,axis=1) # (batch_size,15,8,8,3)
 
         
         # NN
+    # conv_module = nn.Conv(features=512,kernel_size=(3,3),strides=(1,1),padding='same')
+    # net = conv_module.init(jax.random.PRNGKey(0),x)
+    # net = conv_module.apply(net,x)
         net = nn.Conv(features=self.width, kernel_size=(3, 3), strides=(1, 1),
-                      padding='same', name="ACL_conv_1")(x_chosen) # o/p shape = (batch_size,1,8,8,self.width)
+                      padding='same', name="ACL_conv_1")(chosen_patch) # o/p shape = (batch_size,8,8,self.width)
         net = nn.relu(net)
         net = nn.Conv(features=self.width, kernel_size=(1, 1), strides=(1, 1),
                       padding='same', name="ACL_conv_2")(net)
         net = nn.relu(net)
-        net = ConvZeros((self.out_dims*2), name="ACL_conv_out")(net) # o/p shape = (batch_size,1,8,8,6) so that the split of mu and logsigma can make the element wise multiplication possible
-
-        mu, logsigma = jnp.split(net, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
+        net = ConvZeros((self.out_dims*2), name="ACL_conv_out")(net) # o/p shape = (batch_size,8,8,6) so that the split of mu and logsigma can make the element wise multiplication possible
+        x_net = jnp.expand_dims(net,axis=1) #output shape = (batch_size,1,8,8,6)
+        mu, logsigma = jnp.split(x_net, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
+        
         #mu and sigma (batch_size,1,8,8,3) ->  (batch_size,15,8,8,3)
         mu = mu.repeat(15, axis=1)
         logsigma = logsigma.repeat(15, axis=1)
         # shape of mu and logsigma = (batch_size,15,8,8,3)
+        
         # See https://github.com/openai/glow/blob/master/model.py#L376
         # sigma = jnp.exp(logsigma)
         sigma = jax.nn.sigmoid(logsigma + 2.)
@@ -97,13 +102,13 @@ class AffineCoupling(nn.Module):
         
         # Merge
         if not reverse:
-            ya = sigma * x_rest + mu #ya= sigma*(batch_size,15,8,8,3)+mu
+            yb = sigma * x_rest + mu #yb= sigma*(batch_size,15,8,8,3)+mu
             logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
         else:
-            ya = (x_rest - mu) / (sigma + self.eps)
+            yb = (x_rest - mu) / (sigma + self.eps)
             logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
             
-        y = jnp.concatenate((ya, x_chosen), axis=1) # y = (batch_size, 16, 8, 8, 3)
+        y = jnp.concatenate((yb, x_chosen), axis=1) # y = (batch_size, 16, 8, 8, 3)
         
         # Turn patches back to the image
         y = rearrange(y, 'b (nh nw) hp wp c -> b (nh hp) (nw wp) c ', nh=4, nw=4) #turn back y into (256, 32, 32, 3)

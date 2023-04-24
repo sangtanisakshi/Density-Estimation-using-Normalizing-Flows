@@ -33,7 +33,7 @@ print('Flax version', flax.__version__)
 random_key = jax.random.PRNGKey(0)
 
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-name','--wb_name', default="trial-test", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-name','--wb_name', default="final-trial-test", type=str, help='WandB Run Name', required=False)
 parser.add_argument('-desc', '--wb_desc', type=str, help='WandB Run Description', required=False)
 #parser.add_argument('-hpo', '--hpo', default=False, type=bool, help='Hyperparameter Optimization', required=False)
 args = parser.parse_args()
@@ -125,7 +125,7 @@ def train_glow(train_ds,
                num_channels=3,
                num_bits=8,
                init_lr=1e-3,
-               num_epochs=1,
+               num_epochs=50,
                num_sample_epochs=1,
                num_warmup_epochs=10,
                num_save_epochs=2,
@@ -170,7 +170,7 @@ def train_glow(train_ds,
     
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
-    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=0.0001).init(params)
+    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=0.0001).create(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
     summarize_jax_model(params, max_depth=2)

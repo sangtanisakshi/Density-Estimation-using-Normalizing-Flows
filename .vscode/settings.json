@@ -1,6 +1,6 @@
 {
 
-"python.defaultInterpreterPath": "\\dhc\\home\\sakshi.sangtani\\conda3\\envs\\jax_main\\python.exe",
+"python.defaultInterpreterPath": "\\dhc\\home\\sakshi.sangtani\\conda3\\envs\\jax_10\\python.exe",
 
 "python.terminal.activateEnvironment": true,
 
@@ -8,6 +8,5 @@
 
 "jupyter.enablePythonKernelLogging": true,
 "python.analysis.typeCheckingMode": "off",
-
 
 }
