@@ -6,6 +6,7 @@ import numpy as np
 import os
 import argparse
 import glob
+import utils
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
@@ -18,13 +19,9 @@ import wandb
 
 from functools import partial
 from matplotlib import pyplot as plt
-
 from sample import postprocess
 from sample import sample
 from model import GLOW
-from utils import summarize_jax_model
-from utils import plot_image_grid
-from utils import map_fn
 from PIL import Image
 
 print('Jax version', jax.__version__)
@@ -33,9 +30,12 @@ print('Flax version', flax.__version__)
 random_key = jax.random.PRNGKey(0)
 
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-name','--wb_name', default="final-trial-test", type=str, help='WandB Run Name', required=False)
-parser.add_argument('-desc', '--wb_desc', type=str, help='WandB Run Description', required=False)
-#parser.add_argument('-hpo', '--hpo', default=False, type=bool, help='Hyperparameter Optimization', required=False)
+parser.add_argument('-name','--wb_name', default="Error fix-3", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-desc', '--wb_desc', default="sanity check for reverse pass - too much difference between x and generated x", type=str, help='WandB Run Description', required=False)
+parser.add_argument('-lr', '--init_lr',  default=1e-5, type=float,  help='Learning Rate', required=False)
+parser.add_argument('-img', '--image_size',  default=32, help='Image Size', required=False)
+parser.add_argument('-wd', '--weight_decay',  default=0.1, type=float, help='Adam Weight Decay', required=False)
+parser.add_argument('-nn', '--nn_width',  default=512, type=int, help='Neural Network Width', required=False)
 args = parser.parse_args()
 
 @jax.vmap
@@ -55,20 +55,20 @@ def get_logpz(z, priors):
 config_dict = {
     'image_path': "/dhc/home/sakshi.sangtani/lfw/lfw-deepfunneled/lfw-deepfunneled/*",
     'train_split': 0.8,
-    'image_size': 32,
+    'image_size': args.image_size,
     'num_channels': 3,
     'num_bits': 8,
     'batch_size': 256,
-    'K': 16,
+    'K': 48,
     'L': 1,
-    'nn_width': 512,
+    'nn_width': args.nn_width,
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
-    'init_lr': 1e-3,
-    'num_epochs': 5,
-    'num_warmup_epochs': 8, # For learning rate warmup
-    'num_sample_epochs': 5, # Fractional epochs for sampling because one epoch is quite long 
-    'num_save_epochs': 1,
+    'init_lr': args.init_lr,
+    'num_epochs': 50,
+    'num_warmup_epochs': 12, # For learning rate warmup
+    'num_sample_epochs': 4, # Fractional epochs for sampling because one epoch is quite long 
+    'num_save_epochs': 5,
     'num_samples': 9
 }
 
@@ -92,7 +92,7 @@ def get_train_dataset(img_data,image_size, num_bits, batch_size, skip=None, **kw
     if skip is not None:
         train_ds = train_ds.skip(skip)
     train_ds = train_ds.shuffle(buffer_size=200)
-    train_ds = train_ds.map(partial(map_fn, size=image_size, num_bits=num_bits, training=True))
+    train_ds = train_ds.map(partial(utils.map_fn, size=image_size, num_bits=num_bits, training=True))
     train_ds = train_ds.batch(batch_size)
     train_ds = train_ds.repeat()
     return iter(tfds.as_numpy(train_ds))
@@ -104,11 +104,13 @@ def get_val_dataset(img_data,image_size, num_bits, batch_size,
     val_ds = img_data
     if take is not None:
         val_ds = val_ds.take(take)
-    val_ds = val_ds.map(partial(map_fn, size=image_size, num_bits=num_bits, training=False))
+    val_ds = val_ds.map(partial(utils.map_fn, size=image_size, num_bits=num_bits, training=False))
     val_ds = val_ds.batch(batch_size)
     if repeat:
         val_ds = val_ds.repeat()
     return iter(tfds.as_numpy(val_ds))
+
+utils.sanity_check(random_key)
 
 ##Make all directories
 weights_loc ="../weights/"+args.wb_name+"/"
@@ -124,7 +126,7 @@ def train_glow(train_ds,
                image_size=256,
                num_channels=3,
                num_bits=8,
-               init_lr=1e-3,
+               init_lr=1e-5,
                num_epochs=50,
                num_sample_epochs=1,
                num_warmup_epochs=10,
@@ -170,10 +172,10 @@ def train_glow(train_ds,
     
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
-    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=0.0001).create(params)
+    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=args.weight_decay).create(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
-    summarize_jax_model(params, max_depth=2)
+    utils.summarize_jax_model(params, max_depth=2)
     
     # Learning rate warmup 
     def lr_warmup(step):
@@ -219,9 +221,8 @@ def train_glow(train_ds,
     # Helper function for sampling from random latent fixed during training for comparison
     eps = []
     for i in range(L):
-        expected_h = image_size // 2**(i + 1)
-        expected_c = num_channels * 2**(i + 1)
-        if i == L - 1: expected_c *= 2
+        expected_h = image_size
+        expected_c = num_channels
         eps.append(jax.random.normal(key, (num_samples, expected_h, expected_h, expected_c)))
     sample_fn = partial(sample, eps=eps, key=key, display=False,
                         sampling_temperature=sampling_temperature,
@@ -296,7 +297,7 @@ train_ds = get_train_dataset(data,**config_dict, skip=val_split)
 val_ds = get_val_dataset(data,**config_dict, take=val_split, repeat=True)
 
 # Sample
-plot_image_grid(postprocess(next(val_ds), num_bits=config_dict['num_bits'])[:25], 
+utils.plot_image_grid(postprocess(next(val_ds), num_bits=config_dict['num_bits'])[:25], 
   title="Input data sample",display=False)
 
 model, params = train_glow(train_ds, val_ds=val_ds, **config_dict)

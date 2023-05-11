@@ -1,7 +1,5 @@
-
 import jax
 import flax
-import optax
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
@@ -81,7 +79,7 @@ config_dict = {
 }
 
 # Initialize WandB logging
-wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc, dir="../")
+#wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc, dir="../")
 
 output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
 output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
@@ -250,7 +248,7 @@ def train_glow(train_ds,
             t = time.time() - start
             if val_ds is not None:
                 bits = eval_step(opt.target, next(val_ds))
-                wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1],"val_bpd":bits,"epoch":epoch})
+               # wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1],"val_bpd":bits,"epoch":epoch})
             print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                   f"[{int(t // 3600):02d}h {int((t % 3600) // 60):02d}mn]"
                   f" train_bits/dims = {loss[0]:.3f},"
@@ -300,7 +298,7 @@ fp_in = fp + "step_*.png"
 fp_out = "../sample_evolution_" + args.wb_name + ".gif"
 
 li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob(fp_in))]
-wandb.log({"Samples during Training": [wandb.Image(img) for img in li_imgs]})
+#wandb.log({"Samples during Training": [wandb.Image(img) for img in li_imgs]})
 
 # https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#gif
 img, *imgs = [Image.open(f) for f in sorted(glob.glob(fp_in))]
@@ -308,7 +306,7 @@ img.save(fp=fp_out, format='GIF', append_images=imgs,
          save_all=True, duration=200, loop=0)
 
 rand_imgs = (np.asarray(f) for f in imgs)
-wandb.log({"Samples during Training": [wandb.Image(img) for img in rand_imgs]})
+#wandb.log({"Samples during Training": [wandb.Image(img) for img in rand_imgs]})
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"],  key=random_key,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
@@ -330,7 +328,7 @@ sample(model, params, shape=(16,) + config_dict["sampling_shape"],
        save_path=(results_loc+"final_random_sample_T=0.5.png"))
 
 sample_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob((results_loc+"final_random_sample_T*.png")))]
-wandb.log({"Random samples": [wandb.Image(img) for img in sample_imgs]})
+#wandb.log({"Random samples": [wandb.Image(img) for img in sample_imgs]})
 
 # def reconstruct(model, params, batch, save_loc):
 #     global config_dict

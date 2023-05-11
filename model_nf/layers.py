@@ -4,6 +4,7 @@ import flax
 import jax.numpy as jnp
 import flax.linen as nn
 import random
+import utils
 from functools import reduce
 from einops import rearrange
 
@@ -64,22 +65,34 @@ class AffineCoupling(nn.Module):
     eps: float = 1e-8
     
     @nn.compact
-    def __call__(self, inputs, logdet=0, reverse=False):
+    def __call__(self, inputs, logdet=0, reverse=False, dilation=True, only_neighbours=True):
         
         ##TODO - set a seed
-        random_patch = random.randint(0,15)
+        if not reverse:
+            random_patch = random.randint(0,15)
+        else:
+            random_patch = random.randint(0,3)
         #inputs.shape = (batch_size,250,250,3) if the image has not been scaled down, otherwise it will be (batch_size,32,32,3)
+        
+        ##Get neighbours of the selected patch
+        if only_neighbours:
+            neighbours = utils.get_neighbours(random_patch)
+        
         # We select one scaled image out of a batch, and now divide it into 16 patches. O/P dimension here = (batch_size,16,8,8,3)
-        all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=8, wp=8) #Assuming that image is scaled. For 250*250, hp=wp=50 for 25 patches
+        if not dilation:
+            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=8, wp=8)#Assuming that image is scaled. For 250*250, hp=wp=50 for 25 patches
+        else:
+            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (hp wp) nh nw c ', hp=4, wp=4)#dilated convolution
         chosen_patch = all_patches[:,random_patch,:,:,:] #shape = (batch_size,8,8,3)
         x_chosen = jnp.expand_dims(chosen_patch,axis=1) #output shape = (batch_size,1,8,8,3)
         x_rest =  jnp.delete(all_patches,random_patch,axis=1) # (batch_size,15,8,8,3)
-
         
+        ##TODO - 64x64 -with dilation 8x8 patch and 16x16 patch
         # NN
-    # conv_module = nn.Conv(features=512,kernel_size=(3,3),strides=(1,1),padding='same')
-    # net = conv_module.init(jax.random.PRNGKey(0),x)
-    # net = conv_module.apply(net,x)
+        # conv_module = nn.Conv(features=512,kernel_size=(3,3),strides=(1,1),padding='same')
+        # net = conv_module.init(jax.random.PRNGKey(0),x)
+        # net = conv_module.apply(net,x)
+    
         net = nn.Conv(features=self.width, kernel_size=(3, 3), strides=(1, 1),
                       padding='same', name="ACL_conv_1")(chosen_patch) # o/p shape = (batch_size,8,8,self.width)
         net = nn.relu(net)
@@ -87,35 +100,48 @@ class AffineCoupling(nn.Module):
                       padding='same', name="ACL_conv_2")(net)
         net = nn.relu(net)
         net = ConvZeros((self.out_dims*2), name="ACL_conv_out")(net) # o/p shape = (batch_size,8,8,6) so that the split of mu and logsigma can make the element wise multiplication possible
-        x_net = jnp.expand_dims(net,axis=1) #output shape = (batch_size,1,8,8,6)
-        mu, logsigma = jnp.split(x_net, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
-        
-        #mu and sigma (batch_size,1,8,8,3) ->  (batch_size,15,8,8,3)
-        mu = mu.repeat(15, axis=1)
-        logsigma = logsigma.repeat(15, axis=1)
-        # shape of mu and logsigma = (batch_size,15,8,8,3)
-        
-        # See https://github.com/openai/glow/blob/master/model.py#L376
-        # sigma = jnp.exp(logsigma)
+        #x_net = jnp.expand_dims(net,axis=1) #output shape = (batch_size,1,8,8,6)
+        mu, logsigma = jnp.split(net, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
         sigma = jax.nn.sigmoid(logsigma + 2.)
-        
-        
-        # Merge
-        if not reverse:
-            yb = sigma * x_rest + mu #yb= sigma*(batch_size,15,8,8,3)+mu
-            logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
-        else:
-            yb = (x_rest - mu) / (sigma + self.eps)
-            logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
+        if not only_neighbours:
+        #mu and sigma (batch_size,1,8,8,3) ->  (batch_size,15,8,8,3)
+            if not reverse:
+                #get neighbours of the chosen patch
+                mu = mu.repeat(15, axis=1)
+                sigma = sigma.repeat(15, axis=1)
+            else:
+                mu = mu.repeat(3, axis=1)
+                sigma = sigma.repeat(3, axis=1)
             
-        y = jnp.concatenate((yb, x_chosen), axis=1) # y = (batch_size, 16, 8, 8, 3)
-        
-        # Turn patches back to the image
-        y = rearrange(y, 'b (nh nw) hp wp c -> b (nh hp) (nw wp) c ', nh=4, nw=4) #turn back y into (256, 32, 32, 3)
-        
+            yb = (x_rest - mu) / (sigma + self.eps)
+            logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+            y = jnp.insert(arr=yb,obj=random_patch,values=x_chosen,axis=1)
+                 
+        else:
+            if not reverse:
+                for index in neighbours:
+                    all_patches = all_patches.at[:,index,:,:,:].multiply(sigma)
+                    all_patches = all_patches.at[:,index,:,:,:].add(mu)
+                logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+                y = all_patches
+            else:
+                for index in neighbours:
+                    all_patches = all_patches.at[:,index,:,:,:].add(-mu)
+                    all_patches = all_patches.at[:,index,:,:,:].divide(sigma+self.eps)
+                logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+                y = all_patches   
+
+        #Turn patches back to the image
+        if not dilation:
+            if not reverse:
+                y = rearrange(y, 'b (nh nw) hp wp c -> b (nh hp) (nw wp) c ', nh=4, nw=4) #turn back y into (256, 32, 32, 3)
+            else:
+                y = rearrange(y, 'b (nh nw) hp wp c -> b (nh hp) (nw wp) c ', nh=2, nw=2) #turn back y into (256, 32, 32, 3)
+        else:
+            y = rearrange(y, 'b (hp wp) nh nw c -> b (nh hp) (nw wp) c ', hp=4, wp=4) #dilated convolution
+            
         return y, logdet
-    
-    
+
 ### Activation Normalization
 class ActNorm(nn.Module):
     scale: float = 1.
@@ -145,8 +171,9 @@ class ActNorm(nn.Module):
         sigma = self.param('actnorm_sigma', dd_stddev_initializer, shape)
         
         logsigma = jnp.log(jnp.abs(sigma))
-        logdet_factor = reduce(
-            operator.mul, (inputs.shape[i] for i in range(1, len(inputs.shape) - 1)), 1)
+     #   logdet_factor = reduce(
+     #       operator.mul, (inputs.shape[i] for i in range(1, len(inputs.shape) - 1)), 1)
+        logdet_factor = 1
         if not reverse:
             y = sigma * (inputs + mu)
             logdet += logdet_factor * jnp.sum(logsigma)

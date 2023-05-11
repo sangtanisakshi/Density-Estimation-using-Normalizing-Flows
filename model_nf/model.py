@@ -14,13 +14,13 @@ class FlowStep(nn.Module):
     def __call__(self, x, logdet=0, reverse=False):
         out_dims = x.shape[-1]
         if not reverse:
-      #     x, logdet = ActNorm()(x, logdet=logdet, reverse=False)
+            x, logdet = ActNorm()(x, logdet=logdet, reverse=False)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=False)
             x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=False)
         else:
             x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=True)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=True)
-      #     x, logdet = ActNorm()(x, logdet=logdet, reverse=True)
+            x, logdet = ActNorm()(x, logdet=logdet, reverse=True)
         return x, logdet
     
     
@@ -74,7 +74,7 @@ class GLOW(nn.Module):
                     # or some conditioning e.g. class information.
                     # If not learnable, the model just uses the input x directly
                     # see https://github.com/openai/glow/blob/master/model.py#L109
-                    prior = ConvZeros(x.shape[-1] * 2, name="prior_top")(jnp.zeros(x.shape))
+                    prior = ConvZeros((x.shape[-1])*2, name="prior_top")(jnp.zeros(x.shape))
                     mu, logsigma = jnp.split(prior, 2, axis=-1)
                     x = x * jnp.exp(logsigma) + mu
                 
@@ -92,7 +92,7 @@ class GLOW(nn.Module):
                 else:
                     zl, prior = x, None
                     if self.learn_top_prior:
-                        prior = ConvZeros(zl.shape[-1] * 2, name="prior_top")(jnp.zeros(zl.shape))
+                        prior = ConvZeros(zl.shape[-1]*2, name="prior_top")(jnp.zeros(zl.shape))
                 z.append(zl)
                 priors.append(prior)
                     

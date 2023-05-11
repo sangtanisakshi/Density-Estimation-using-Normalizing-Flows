@@ -3,8 +3,6 @@ import jax.numpy as jnp
 import flax
 import jax
 
-from model import GLOW
-
 import argparse
 from utils import plot_image_grid
 from functools import partial
