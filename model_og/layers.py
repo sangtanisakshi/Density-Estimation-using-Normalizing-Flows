@@ -1,10 +1,12 @@
 import jax
 import flax
+import random
+import utils
 import jax.numpy as jnp
 import flax.linen as nn
 import operator
 from functools import reduce
-
+from einops import rearrange
 
 ### From one scale to another: squeeze / unsqueeze
 def squeeze(x):
@@ -86,32 +88,73 @@ class AffineCoupling(nn.Module):
     eps: float = 1e-8
     
     @nn.compact
-    def __call__(self, inputs, logdet=0, reverse=False):
-        # Split
-        xa, xb = jnp.split(inputs, 2, axis=-1)
-        #(64,16,16,12) -> (64,16,16,6)
-        # NN
+    def __call__(self, inputs, logdet=0, reverse=False, dilation=False, only_neighbours=False):
+        
+
+        random_patch = random.randint(0,15)
+        #inputs.shape = (batch_size,250,250,3) if the image has not been scaled down, otherwise it will be (batch_size,32,32,3)
+        
+        ##Get neighbours of the selected patch
+        if only_neighbours:
+            neighbours = utils.get_neighbours(random_patch)
+        
+        # We select one scaled image out of a batch, and now divide it into 16 patches. 
+        # for a 32x32 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=4;
+        # for a 64x64 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=8;
+        # for a 64x64 image 2. 16x16 patches - hp=wp=16 for no dilation and for dilation hp=wp=4:;
+        
+        if not dilation:
+            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=8, wp=8)
+        else:
+            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (hp wp) nh nw c ', hp=4, wp=4)#dilated convolution
+        chosen_patch = all_patches[:,random_patch,:,:,:] #shape = (batch_size,8,8,3)
+        x_chosen = jnp.expand_dims(chosen_patch,axis=1) #output shape = (batch_size,1,8,8,3)
+        x_rest =  jnp.delete(all_patches,random_patch,axis=1) # (batch_size,15,8,8,3)
+    
         net = nn.Conv(features=self.width, kernel_size=(3, 3), strides=(1, 1),
-                      padding='same', name="ACL_conv_1")(xb)
+                      padding='same', name="ACL_conv_1")(chosen_patch) # o/p shape = (batch_size,8,8,self.width)
         net = nn.relu(net)
         net = nn.Conv(features=self.width, kernel_size=(1, 1), strides=(1, 1),
                       padding='same', name="ACL_conv_2")(net)
         net = nn.relu(net)
-        net = ConvZeros(self.out_dims, name="ACL_conv_out")(net)
-        mu, logsigma = jnp.split(net, 2, axis=-1)
-        # See https://github.com/openai/glow/blob/master/model.py#L376
-        # sigma = jnp.exp(logsigma)
+        net = ConvZeros((self.out_dims*2), name="ACL_conv_out")(net) # o/p shape = (batch_size,8,8,6) so that the split of mu and logsigma can make the element wise multiplication possible
+        if not dilation:
+            net = jnp.expand_dims(net,axis=1) #output shape = (batch_size,1,8,8,6)
+        mu, logsigma = jnp.split(net, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
         sigma = jax.nn.sigmoid(logsigma + 2.)
-        
-        # Merge
-        if not reverse:
-            ya = sigma * xa + mu
-            logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
-        else:
-            ya = (xa - mu) / (sigma + self.eps)
-            logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+        if not only_neighbours:
+        #mu and sigma (batch_size,1,8,8,3) ->  (batch_size,15,8,8,3)
+            if not reverse:
+                #get neighbours of the chosen patch
+                mu = mu.repeat(15, axis=1)
+                sigma = sigma.repeat(15, axis=1)
+            else:
+                mu = mu.repeat(3, axis=1)
+                sigma = sigma.repeat(3, axis=1)
             
-        y = jnp.concatenate((ya, xb), axis=-1)
+            yb = (x_rest - mu) / (sigma + self.eps)
+            logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
+            y = jnp.insert(arr=yb,obj=(random_patch),values=x_chosen,axis=1) #TODO - fix this insert issue
+                 
+        else:
+            if not reverse:
+                for index in neighbours:
+                    all_patches = all_patches.at[:,index,:,:,:].multiply(sigma)
+                    all_patches = all_patches.at[:,index,:,:,:].add(mu)
+                logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
+            else:
+                for index in neighbours:
+                    all_patches = all_patches.at[:,index,:,:,:].add(-mu)
+                    all_patches = all_patches.at[:,index,:,:,:].divide(sigma+self.eps)
+                logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
+            y = all_patches   
+
+        #Turn patches back to the image - turn back y into (256, 32, 32, 3)
+        if not dilation:
+            y = rearrange(y, 'b (nh nw) hp wp c -> b (nh hp) (nw wp) c ', nh=4, nw=4) #turn back y into (256, 32, 32, 3)
+        else:
+            y = rearrange(y, 'b (hp wp) nh nw c -> b (nh hp) (nw wp) c ', hp=4, wp=4) #dilated convolution
+            
         return y, logdet
     
     

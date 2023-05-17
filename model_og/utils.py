@@ -1,10 +1,12 @@
 import jax
 import flax
 import tensorflow as tf
+import jax.numpy as jnp
 
 import numpy as np
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
+from model import GLOW
 
 def map_fn(image_path, num_bits=5, size=256, training=True):
     """Read image file, quantize and map to [-0.5, 0.5] range.
@@ -73,3 +75,66 @@ def plot_image_grid(y, title=None, display=True, save_path=None, figsize=(10, 10
         plt.show()
     else:
         plt.close()
+        
+def get_neighbours(i):
+
+    mat = np.arange(0,16).reshape(4,4)
+    loc = np.where(mat == i)
+        
+    ret = []
+        
+    if loc[0] != 0:
+        ret.append(mat[loc[0] - 1,loc[1]])
+        
+    if loc[0] != 3:
+        ret.append(mat[loc[0] + 1, loc[1]])
+            
+    if loc[1] != 0:
+        ret.append(mat[loc[0], loc[1] - 1])
+        
+    if loc[1] != 3:
+        ret.append(mat[loc[0], loc[1] + 1])
+            
+    return np.array(ret).squeeze()
+
+def sanity_check(random_key):
+    # Input
+    x_1 = jax.random.normal(random_key, (256, 64, 64, 3))
+    K, L = 48, 1
+    model = GLOW(K=K, L=L, nn_width=512, key=random_key, learn_top_prior=True)
+    init_variables = model.init(random_key, x_1)
+
+    # Forward call
+    _, z, logdet, priors = model.apply(init_variables, x_1)
+
+    # Check output shape
+    expected_h = x_1.shape[1] // 2**L
+    expected_c = x_1.shape[-1] * 4**L // 2**(L - 1)
+    print("  \033[92m✓\033[0m" if z[-1].shape[1] == expected_h and z[-1].shape[-1] == expected_c 
+          else "  \033[91mx\033[0m",
+          "Forward pass output shape is", z[-1].shape)
+    # Check sizes of the intermediate latent
+    correct_latent_shapes = True
+    correct_prior_shapes = True
+    for i, (zi, priori) in enumerate(zip(z, priors)):
+        expected_h = x_1.shape[1] // 2**(i + 1)
+        expected_c = x_1.shape[-1] * 2**(i + 1)
+        if i == L - 1:
+            expected_c *= 2
+        if zi.shape[1] != expected_h or zi.shape[-1] != expected_c:
+            correct_latent_shapes = False
+        if priori.shape[1] != expected_h or priori.shape[-1] != 2 * expected_c:
+            correct_prior_shapes = False
+    print("  \033[92m✓\033[0m" if correct_latent_shapes else "  \033[91mx\033[0m",
+          "Check intermediate latents shape")
+    print("  \033[92m✓\033[0m" if correct_latent_shapes else "  \033[91mx\033[0m",
+          "Check intermediate priors shape")
+    print(zi.shape, " ", priori.shape)
+    # Reverse the network without sampling
+    x_3, *_ = model.apply(init_variables, z[-1], z=z, reverse=True)
+
+    print("  \033[92m✓\033[0m" if np.array_equal(x_1.shape, x_3.shape) else "  \033[91mx\033[0m", 
+          "Reverse pass output shape = Original shape =", x_1.shape)
+    diff = jnp.mean(jnp.abs(x_1 - x_3))
+    print("  \033[92m✓\033[0m" if diff < 1e-4 else "  \033[91mx\033[0m", 
+          f"Diff between x and Glow_r o Glow (x) = {diff:.3e}")

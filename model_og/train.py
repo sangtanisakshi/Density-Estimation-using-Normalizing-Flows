@@ -6,6 +6,7 @@ import numpy as np
 import os
 import argparse
 import glob
+import utils
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
@@ -32,16 +33,16 @@ from PIL import Image
 print('Jax version', jax.__version__)
 print('Flax version', flax.__version__)
 
-random_key = jax.random.PRNGKey(0)
+random_key = jax.random.PRNGKey(42)
 
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-n','--wb_name', default="trial-test", type=str, help='WandB Run Name', required=False)
-parser.add_argument('-e','--epochs', default=2, type=int, help='Training Epochs', required=False)
-parser.add_argument('-img', '--img_size', type=int, default=32, help='Image Size', required=False)
+parser.add_argument('-n','--wb_name', default="GLOW-DENF-2", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-e','--epochs', default=30, type=int, help='Training Epochs', required=False)
+parser.add_argument('-img', '--img_size', type=int, default=64, help='Image Size', required=False)
 parser.add_argument('--nbits', type=int, default=8, help='Number of Bits', required=False)
 parser.add_argument('-b', '--batch_size', type=int, default=256, help='Batch Size', required=False)
-parser.add_argument('-m', '--wb_desc', type=str, help='WandB Run Description', required=False)
-parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3, help='Learning Rate', required=False)
+parser.add_argument('-m', '--wb_desc', type=str, default="Trying to run DENF on glow og file - neighbours=false and dilation=False (#1 was with true neighbours)", help='WandB Run Description', required=False)
+parser.add_argument('-lr', '--learning_rate', type=float, default=1e-5, help='Learning Rate', required=False)
 args = parser.parse_args()
 
 @jax.vmap
@@ -65,21 +66,23 @@ config_dict = {
     'num_channels': 3,
     'num_bits': args.nbits,
     'batch_size': args.batch_size,
-    'K': 16,
-    'L': 3,     ## TODO: keep 1 for our architecture, otherwise original is 3
+    'K': 48,
+    'L': 1,     ## TODO: keep 1 for our architecture, otherwise original is 3
     'nn_width': 512, 
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
     'init_lr': args.learning_rate,
     'num_epochs': args.epochs,
-    'num_warmup_epochs': 8, # For learning rate warmup
-    'num_sample_epochs': 5, # Fractional epochs for sampling because one epoch is quite long 
+    'num_warmup_epochs': 5, # For learning rate warmup
+    'num_sample_epochs': 2, # Fractional epochs for sampling because one epoch is quite long 
     'num_save_epochs': 1,
     'num_samples': 9
 }
 
 # Initialize WandB logging
-#wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc, dir="../")
+wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc, dir="../")
+
+utils.sanity_check(random_key)
 
 output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
 output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
@@ -171,7 +174,7 @@ def train_glow(train_ds,
 
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
-    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=0.0001).init(params)
+    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=0.001).create(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
     summarize_jax_model(params, max_depth=2)
@@ -248,7 +251,7 @@ def train_glow(train_ds,
             t = time.time() - start
             if val_ds is not None:
                 bits = eval_step(opt.target, next(val_ds))
-               # wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1],"val_bpd":bits,"epoch":epoch})
+                wandb.log({"training bpd":loss[0],"log(p(z))":loss[1][0],"logdet":loss[1][1],"val_bpd":bits,"epoch":epoch})
             print(f"\r\033[92m[Epoch {epoch + 1}/{num_epochs}]\033[0m"
                   f"[{int(t // 3600):02d}h {int((t % 3600) // 60):02d}mn]"
                   f" train_bits/dims = {loss[0]:.3f},"
@@ -298,7 +301,7 @@ fp_in = fp + "step_*.png"
 fp_out = "../sample_evolution_" + args.wb_name + ".gif"
 
 li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob(fp_in))]
-#wandb.log({"Samples during Training": [wandb.Image(img) for img in li_imgs]})
+wandb.log({"Samples during Training": [wandb.Image(img) for img in li_imgs]})
 
 # https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#gif
 img, *imgs = [Image.open(f) for f in sorted(glob.glob(fp_in))]
@@ -306,7 +309,7 @@ img.save(fp=fp_out, format='GIF', append_images=imgs,
          save_all=True, duration=200, loop=0)
 
 rand_imgs = (np.asarray(f) for f in imgs)
-#wandb.log({"Samples during Training": [wandb.Image(img) for img in rand_imgs]})
+wandb.log({"Samples during Training": [wandb.Image(img) for img in rand_imgs]})
 
 sample(model, params, shape=(16,) + config_dict["sampling_shape"],  key=random_key,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
@@ -328,7 +331,7 @@ sample(model, params, shape=(16,) + config_dict["sampling_shape"],
        save_path=(results_loc+"final_random_sample_T=0.5.png"))
 
 sample_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob((results_loc+"final_random_sample_T*.png")))]
-#wandb.log({"Random samples": [wandb.Image(img) for img in sample_imgs]})
+wandb.log({"Random samples": [wandb.Image(img) for img in sample_imgs]})
 
 # def reconstruct(model, params, batch, save_loc):
 #     global config_dict

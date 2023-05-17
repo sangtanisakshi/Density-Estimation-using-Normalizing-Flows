@@ -16,7 +16,7 @@ print(jax.devices())
 jax.config.update('jax_array', False)
 import time
 import wandb
-
+import random
 from functools import partial
 from matplotlib import pyplot as plt
 from sample import postprocess
@@ -27,11 +27,11 @@ from PIL import Image
 print('Jax version', jax.__version__)
 print('Flax version', flax.__version__)
 
+random.seed(42)
 random_key = jax.random.PRNGKey(0)
-
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-name','--wb_name', default="Error fix-3", type=str, help='WandB Run Name', required=False)
-parser.add_argument('-desc', '--wb_desc', default="sanity check for reverse pass - too much difference between x and generated x", type=str, help='WandB Run Description', required=False)
+parser.add_argument('-name','--wb_name', default="DENF-18", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-desc', '--wb_desc', default="DENF17 - sampling works. Doing no neighbours now, everything else is fine, but bad results so far. ", type=str, help='WandB Run Description', required=False)
 parser.add_argument('-lr', '--init_lr',  default=1e-5, type=float,  help='Learning Rate', required=False)
 parser.add_argument('-img', '--image_size',  default=32, help='Image Size', required=False)
 parser.add_argument('-wd', '--weight_decay',  default=0.1, type=float, help='Adam Weight Decay', required=False)
@@ -65,11 +65,12 @@ config_dict = {
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
     'init_lr': args.init_lr,
-    'num_epochs': 50,
-    'num_warmup_epochs': 12, # For learning rate warmup
-    'num_sample_epochs': 4, # Fractional epochs for sampling because one epoch is quite long 
+    'num_epochs': 30,
+    'num_warmup_epochs': 2, # For learning rate warmup
+    'num_sample_epochs': 0.5, # Fractional epochs for sampling because one epoch is quite long 
     'num_save_epochs': 5,
-    'num_samples': 9
+    'num_samples': 9,
+    'weight_decay': args.weight_decay
 }
 
 # Hyperparameter Optimization
@@ -77,12 +78,12 @@ config_dict = {
 #   with open('./wandb_sweep.yaml') as file:
 #       hpo_config = yaml.load(file, Loader=yaml.FullLoader)
 
+output_hw = config_dict["image_size"]
+output_c = config_dict["num_channels"]
+config_dict["sampling_shape"] = (output_hw, output_hw, output_c)
+
 #Initialize WandB
 wandb.init(project="research-nf", entity="dhc_research", name= args.wb_name, config=config_dict, notes=args.wb_desc, dir="../")
-
-output_hw = config_dict["image_size"] // 2 ** config_dict["L"]
-output_c = config_dict["num_channels"] * 4**config_dict["L"] // 2**(config_dict["L"] - 1)
-config_dict["sampling_shape"] = (output_hw, output_hw, output_c)
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -127,7 +128,7 @@ def train_glow(train_ds,
                num_channels=3,
                num_bits=8,
                init_lr=1e-5,
-               num_epochs=50,
+               num_epochs=10,
                num_sample_epochs=1,
                num_warmup_epochs=10,
                num_save_epochs=2,
@@ -155,7 +156,7 @@ def train_glow(train_ds,
         steps_per_epochs: Number of steps per epochs
         K: Number of flow iterations in the GLOW model
         L: number of scales in the GLOW model
-        nn_width: Layer width in the Affine Coupling Layer
+        nn_width: Layer width in the Affine Coupling
         sampling_temperature: Smoothing temperature for sampling from the 
             Gaussian priors (1 = no effect)
         learn_top_prior: Whether to learn the prior for highest latent variable zL.
@@ -190,18 +191,7 @@ def train_glow(train_ds,
         logdets = jnp.mean(logdets) / bits_per_dims_norm
         logpx = logpz + logdets - num_bits                  # num_bits: dequantization factor
         return logpx, logpz, logdets
-        
-    # @jax.jit
-    # def train_step(params, opt_state, batch):
-    #     def loss_fn(params):
-    #         _, z, logdets, priors = model.apply(params, batch, reverse=False)
-    #         logpx, logpz, logdets = get_logpx(z, logdets, priors)
-    #         return - logpx, (logpz, logdets)
-    #     logs, grad = jax.value_and_grad(loss_fn, has_aux=True)(params)
-    #     updates, opt_state = opt.update(grad, opt_state, params)
-    #     params = optax.apply_updates(params, updates)
-    #     return params, logs, opt_state
-    
+          
     @jax.jit
     def train_step(opt, batch):
         def loss_fn(params):
@@ -319,21 +309,38 @@ img.save(fp=fp_out, format='GIF', append_images=imgs,
 rand_imgs = (np.asarray(f) for f in imgs)
 wandb.log({"Samples during Training": [wandb.Image(img) for img in rand_imgs]})
 
-sample(model, params, shape=(16,) + config_dict["sampling_shape"],  key=random_key,
+def reconstruct(model, params, batch, save_loc):
+    global config_dict
+    x, z, logdets, priors = model.apply(params, batch, reverse=False)
+    rec, *_ = model.apply(params, z[-1], z=z, reverse=True)
+    rec = postprocess(rec, config_dict["num_bits"])
+    og_path = save_loc+"original.png"
+    rec_path = save_loc+"reconstruction.png"
+    utils.plot_image_grid(postprocess(batch, config_dict["num_bits"]), title="original",display=False,save_path=og_path,recon=True)
+    utils.plot_image_grid(rec, title="reconstructions",display=False,save_path=rec_path,recon=True)
+
+batch = next(val_ds)
+reconstruct(model, params, batch, results_loc)
+rec_img = np.asarray(Image.open((results_loc+"reconstruction.png")))
+wandb.log({"Reconstruction": wandb.Image(rec_img)})
+og_img = np.asarray(Image.open((results_loc+"original.png")))
+wandb.log({"Original Image": wandb.Image(og_img)})
+
+sample(model, params, shape=(32,) + config_dict["sampling_shape"],  key=random_key,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
        save_path=(results_loc+"final_random_sample_T=1.png"));
 
-sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
+sample(model, params, shape=(32,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(1), sampling_temperature=0.7,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
        save_path=(results_loc+"final_random_sample_T=0.7_1.png"));
 
-sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
+sample(model, params, shape=(32,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(2), sampling_temperature=0.7,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
        save_path=(results_loc+"final_random_sample_T=0.7_2.png"))
 
-sample(model, params, shape=(16,) + config_dict["sampling_shape"], 
+sample(model, params, shape=(32,) + config_dict["sampling_shape"], 
        key=jax.random.PRNGKey(3), sampling_temperature=0.5,
        postprocess_fn=partial(postprocess, num_bits=config_dict["num_bits"]),
        save_path=(results_loc+"final_random_sample_T=0.5.png"))

@@ -98,7 +98,7 @@ def plot_image_grid(y, title=None, display=True, save_path=None, figsize=(10, 10
         
 def sanity_check(random_key):
     # Input
-    x_1 = jax.random.normal(random_key, (256, 32, 32, 3))
+    x_1 = jax.random.normal(random_key, (32, 32, 32, 3))
     K, L = 48, 1
     model = GLOW(K=K, L=L, nn_width=512, key=random_key, learn_top_prior=True)
     init_variables = model.init(random_key, x_1)
