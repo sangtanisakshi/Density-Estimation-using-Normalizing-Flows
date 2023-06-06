@@ -4,21 +4,20 @@ import flax.linen as nn
 from layers import ConvZeros
 from layers import ActNorm, Conv1x1, AffineCoupling
 from layers import Split
-
 ### Flow
 class FlowStep(nn.Module):
     nn_width: int = 512
     key: jax.random.PRNGKey = jax.random.PRNGKey(0)
         
     @nn.compact
-    def __call__(self, x, logdet=0, reverse=False):
+    def __call__(self, x, logdet=0, reverse=False, dilation=False, only_neighbours=True):
         out_dims = x.shape[-1]
         if not reverse:
             x, logdet = ActNorm()(x, logdet=logdet, reverse=False)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=False)
-            x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=False)
+            x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=False, dilation=dilation, only_neighbours=only_neighbours)
         else:
-            x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=True)
+            x, logdet = AffineCoupling(out_dims, self.nn_width)(x, logdet=logdet, reverse=True, dilation=dilation, only_neighbours=only_neighbours)
             x, logdet = Conv1x1(out_dims, self.key)(x, logdet=logdet, reverse=True)
             x, logdet = ActNorm()(x, logdet=logdet, reverse=True)
         return x, logdet
@@ -33,17 +32,17 @@ class GLOW(nn.Module):
     key: jax.random.PRNGKey = jax.random.PRNGKey(0)
         
         
-    def flows(self, x, logdet=0, reverse=False, name=""):
+    def flows(self, x, logdet=0, reverse=False, name="", dilation=False, only_neighbours=True):
         """K subsequent flows. Called at each scale."""
         for k in range(self.K):
             it = k + 1 if not reverse else self.K - k
             x, logdet = FlowStep(self.nn_width, self.key, name=f"{name}/step_{it}")(
-                x, logdet=logdet, reverse=reverse)
+                x, logdet=logdet, reverse=reverse, dilation=dilation, only_neighbours=only_neighbours)
         return x, logdet
         
     
     @nn.compact
-    def __call__(self, x, reverse=False, z=None, eps=None, sampling_temperature=1.0):
+    def __call__(self, x, reverse=False, z=None, eps=None, sampling_temperature=1.0, dilation=False, only_neighbours=True):
         """Args:
             * x: Input to the model
             * reverse: Whether to apply the model or its inverse
@@ -85,7 +84,9 @@ class GLOW(nn.Module):
             if not reverse:
                 x, logdet = self.flows(x, logdet=logdet,
                                        reverse=False,
-                                       name=f"flow_scale_{l + 1}/")
+                                       name=f"flow_scale_{l + 1}/",
+                                       dilation=dilation, 
+                                       only_neighbours=only_neighbours)
                 if l < self.L - 1:
                     zl, x, prior = Split(
                         key=self.key, name=f"flow_scale_{l + 1}/")(x, reverse=False)
@@ -105,7 +106,8 @@ class GLOW(nn.Module):
                         eps=eps[-l - 1] if eps is not None else None,
                         temperature=sampling_temperature)
                 x, logdet = self.flows(x, logdet=logdet, reverse=True,
-                                       name=f"flow_scale_{self.L - l}/")
+                                       name=f"flow_scale_{self.L - l}/", dilation=dilation, 
+                                       only_neighbours=only_neighbours)
                 
         ## Return
         return x, z, logdet, priors

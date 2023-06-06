@@ -1,9 +1,10 @@
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "FALSE"
 import jax
 import flax
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
-import os
 import argparse
 import glob
 import utils
@@ -30,12 +31,14 @@ print('Flax version', flax.__version__)
 random.seed(42)
 random_key = jax.random.PRNGKey(0)
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-name','--wb_name', default="DENF-18", type=str, help='WandB Run Name', required=False)
-parser.add_argument('-desc', '--wb_desc', default="DENF17 - sampling works. Doing no neighbours now, everything else is fine, but bad results so far. ", type=str, help='WandB Run Description', required=False)
-parser.add_argument('-lr', '--init_lr',  default=1e-5, type=float,  help='Learning Rate', required=False)
-parser.add_argument('-img', '--image_size',  default=32, help='Image Size', required=False)
+parser.add_argument('-name','--wb_name', default="DENF2-4", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-desc', '--wb_desc', default="Dilation WITHOUT neighbours. Bigger patches (4 only)", type=str, help='WandB Run Description', required=False)
+parser.add_argument('-lr', '--init_lr',  default=1e-4, type=float,  help='Learning Rate', required=False)
+parser.add_argument('-img', '--image_size',  default=64, help='Image Size', required=False)
 parser.add_argument('-wd', '--weight_decay',  default=0.1, type=float, help='Adam Weight Decay', required=False)
 parser.add_argument('-nn', '--nn_width',  default=512, type=int, help='Neural Network Width', required=False)
+parser.add_argument('-dil', '--dilation',  default=True, type=bool, help='Dilated patches in AC layer', required=False)
+parser.add_argument('-ol', '--only_neighbours',  default=False, type=bool, help='Neighbouring patches', required=False)
 args = parser.parse_args()
 
 @jax.vmap
@@ -70,7 +73,9 @@ config_dict = {
     'num_sample_epochs': 0.5, # Fractional epochs for sampling because one epoch is quite long 
     'num_save_epochs': 5,
     'num_samples': 9,
-    'weight_decay': args.weight_decay
+    'weight_decay': args.weight_decay,
+    'dilation' : args.dilation,
+    'only_neighbours' : args.only_neighbours
 }
 
 # Hyperparameter Optimization
@@ -173,7 +178,7 @@ def train_glow(train_ds,
     
     # Init optimizer and learning rate schedule
     params = model.init(random_key, next(train_ds))
-    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=args.weight_decay).create(params)
+    opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=config_dict['weight_decay']).create(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
     utils.summarize_jax_model(params, max_depth=2)
@@ -195,7 +200,7 @@ def train_glow(train_ds,
     @jax.jit
     def train_step(opt, batch):
         def loss_fn(params):
-            _, z, logdets, priors = model.apply(params, batch, reverse=False)
+            _, z, logdets, priors = model.apply(params, batch, reverse=False, dilation=False, only_neighbours=True)
             logpx, logpz, logdets = get_logpx(z, logdets, priors)
             return - logpx, (logpz, logdets)
         logs, grad = jax.value_and_grad(loss_fn, has_aux=True)(opt.target)
@@ -205,7 +210,7 @@ def train_glow(train_ds,
     # Helper functions for evaluation 
     @jax.jit
     def eval_step(params, batch):
-        _, z, logdets, priors = model.apply(params, batch, reverse=False)
+        _, z, logdets, priors = model.apply(params, batch, reverse=False, dilation=False, only_neighbours=True)
         return - get_logpx(z, logdets, priors)[0]
     
     # Helper function for sampling from random latent fixed during training for comparison

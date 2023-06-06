@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 import random
 import utils
+import wandb
 from functools import reduce
 from einops import rearrange
 
@@ -66,19 +67,20 @@ class AffineCoupling(nn.Module):
     ##Get neighbours of the selected patch
         
     @nn.compact
-    def __call__(self, inputs, logdet=0, reverse=False, dilation=True, only_neighbours=False):
+    def __call__(self, inputs, logdet=0, reverse=False, dilation=False, only_neighbours=True):
         
         random_patch = random.randint(0,15)
         # We select one scaled image out of a batch, and now divide it into 16 patches: 
-        # for a 32x32 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=4;
-        # for a 64x64 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=8;
-        # for a 64x64 image 2. 16x16 patches - hp=wp=16 for no dilation and for dilation hp=wp=4;
+        # for a 32x32 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=4; Gives 16 patches
+        # for a 64x64 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=8; Gives 64 patches
+        # for a 64x64 image 2. 16x16 patches - hp=wp=16 for no dilation and for dilation hp=wp=4; Gives 16 patches
+        ps = utils.get_patch_size(inputs, dilation)
         if only_neighbours:
             neighbours = utils.get_neighbours(random_patch)
         if not dilation:
-            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=8, wp=8)
+            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=ps, wp=ps)
         else:
-            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (hp wp) nh nw c ', hp=4, wp=4)#dilated convolution
+            all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (hp wp) nh nw c ', hp=ps, wp=ps)#dilated convolution
             
 
         chosen_patch = all_patches[:,random_patch,:,:,:] #shape = (batch_size,8,8,3)

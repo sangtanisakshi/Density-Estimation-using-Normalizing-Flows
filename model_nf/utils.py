@@ -54,6 +54,21 @@ def get_neighbours(i):
             
     return np.array(ret).squeeze()
 
+def get_patch_size(inputs, dilation):
+
+# for a 32x32 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=4; Gives 16 patches
+# for a 64x64 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=8; Gives 64 patches
+# for a 64x64 image 2. 16x16 patches - hp=wp=16 for no dilation and for dilation hp=wp=4; Gives 16 patches
+    img_size = (inputs.shape)[1]
+    if dilation:
+        patch_size = 4
+    else:
+        if img_size==32:
+            patch_size = 8
+        elif img_size==64:
+            patch_size = 16
+    return patch_size
+    
 def summarize_jax_model(variables, 
                         max_depth=1, 
                         depth=0,
@@ -100,7 +115,7 @@ def sanity_check(random_key):
     # Input
     x_1 = jax.random.normal(random_key, (32, 32, 32, 3))
     K, L = 48, 1
-    model = GLOW(K=K, L=L, nn_width=512, key=random_key, learn_top_prior=True)
+    model = GLOW(K=K, L=L, nn_width=512, key=random_key, learn_top_prior=True, )
     init_variables = model.init(random_key, x_1)
 
     # Forward call
