@@ -30,19 +30,21 @@ class GLOW(nn.Module):
     nn_width: int = 512                               # NN width in Affine Coupling Layer 
     learn_top_prior: bool = False                     # If true, learn prior N(mu, sigma) for zL
     key: jax.random.PRNGKey = jax.random.PRNGKey(0)
+    dilation: bool = False
+    only_neighbours: bool = True
         
         
-    def flows(self, x, logdet=0, reverse=False, name="", dilation=False, only_neighbours=True):
+    def flows(self, x, logdet=0, reverse=False, name=""):
         """K subsequent flows. Called at each scale."""
         for k in range(self.K):
             it = k + 1 if not reverse else self.K - k
             x, logdet = FlowStep(self.nn_width, self.key, name=f"{name}/step_{it}")(
-                x, logdet=logdet, reverse=reverse, dilation=dilation, only_neighbours=only_neighbours)
+                x, logdet=logdet, reverse=reverse, dilation=self.dilation, only_neighbours=self.only_neighbours)
         return x, logdet
         
     
     @nn.compact
-    def __call__(self, x, reverse=False, z=None, eps=None, sampling_temperature=1.0, dilation=False, only_neighbours=True):
+    def __call__(self, x, reverse=False, z=None, eps=None, sampling_temperature=1.0):
         """Args:
             * x: Input to the model
             * reverse: Whether to apply the model or its inverse
@@ -84,13 +86,11 @@ class GLOW(nn.Module):
             if not reverse:
                 x, logdet = self.flows(x, logdet=logdet,
                                        reverse=False,
-                                       name=f"flow_scale_{l + 1}/",
-                                       dilation=dilation, 
-                                       only_neighbours=only_neighbours)
+                                       name=f"flow_scale_{l + 1}/")
                 if l < self.L - 1:
                     zl, x, prior = Split(
                         key=self.key, name=f"flow_scale_{l + 1}/")(x, reverse=False)
-                else:
+                else:   
                     zl, prior = x, None
                     if self.learn_top_prior:
                         prior = ConvZeros(zl.shape[-1]*2, name="prior_top")(jnp.zeros(zl.shape))
@@ -106,8 +106,7 @@ class GLOW(nn.Module):
                         eps=eps[-l - 1] if eps is not None else None,
                         temperature=sampling_temperature)
                 x, logdet = self.flows(x, logdet=logdet, reverse=True,
-                                       name=f"flow_scale_{self.L - l}/", dilation=dilation, 
-                                       only_neighbours=only_neighbours)
+                                       name=f"flow_scale_{self.L - l}/")
                 
         ## Return
         return x, z, logdet, priors

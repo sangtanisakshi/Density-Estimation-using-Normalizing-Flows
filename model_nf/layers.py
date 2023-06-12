@@ -58,7 +58,7 @@ class Split(nn.Module):
         # Forward mode: Also return the prior as it is used to compute the loss
         else:
             return z, x, prior
-    
+         
 ### Affine Coupling 
 class AffineCoupling(nn.Module):
     out_dims : int
@@ -69,49 +69,59 @@ class AffineCoupling(nn.Module):
     @nn.compact
     def __call__(self, inputs, logdet=0, reverse=False, dilation=False, only_neighbours=True):
         
-        random_patch = random.randint(0,15)
-        # We select one scaled image out of a batch, and now divide it into 16 patches: 
-        # for a 32x32 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=4; Gives 16 patches
-        # for a 64x64 image 1. 8x8 patches - hp=wp=8 for no dilation and for dilation hp=wp=8; Gives 64 patches
-        # for a 64x64 image 2. 16x16 patches - hp=wp=16 for no dilation and for dilation hp=wp=4; Gives 16 patches
+        patch_indices = list(range(0,16,1))
+        random_patch_indices = random.sample(population=patch_indices,k=1)
+        rest_indices = [idx for idx in patch_indices if idx not in random_patch_indices]
         ps = utils.get_patch_size(inputs, dilation)
+        
+        #does not work with multiple patches for obvious reasons.
         if only_neighbours:
-            neighbours = utils.get_neighbours(random_patch)
+            neighbours = utils.get_neighbours(random_patch_indices) 
+            
+        # We now divide each image into patches
         if not dilation:
             all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (nh nw) hp wp c ', hp=ps, wp=ps)
         else:
             all_patches = rearrange(inputs, 'b (nh hp) (nw wp) c -> b (hp wp) nh nw c ', hp=ps, wp=ps)#dilated convolution
             
-
-        chosen_patch = all_patches[:,random_patch,:,:,:] #shape = (batch_size,8,8,3)
-        x_rest =  jnp.delete(all_patches,random_patch,axis=1) # (batch_size,15,8,8,3)
+        network = jnp.zeros((inputs.shape[0],len(random_patch_indices),all_patches.shape[2],all_patches.shape[2],6))
+        chosen_patches = all_patches[:,(random_patch_indices),:,:,:] #shape = (batch_size,patches,8,8,3)
         
-        net = nn.Conv(features=self.width, kernel_size=(3, 3), strides=(1, 1),
-                      padding='same', name="ACL_conv_1")(chosen_patch) # o/p shape = (batch_size,8,8,self.width)
-        net = nn.relu(net)
-        net = nn.Conv(features=self.width, kernel_size=(1, 1), strides=(1, 1),
-                      padding='same', name="ACL_conv_2")(net)
-        net = nn.relu(net)
-        net = ConvZeros((self.out_dims*2), name="ACL_conv_out")(net) # o/p shape = (batch_size,8,8,6) so that the split of mu and logsigma can make the element wise multiplication possible
+        ACL_conv1 = nn.Conv(features=self.width, kernel_size=(3, 3), strides=(1, 1),
+                        padding='same', name=("ACL_conv_1")) # o/p shape = (batch_size,8,8,self.width)
+        ACL_conv2 = nn.Conv(features=self.width, kernel_size=(1, 1), strides=(1, 1),
+                        padding='same', name=("ACL_conv_2"))
+        ACL_conv0 = ConvZeros((self.out_dims*2), name=("ACL_conv0"))# o/p shape = (batch_size,8,8,6) so that the split of mu and logsigma can make the element wise multiplication possible
         
-        if not only_neighbours:
-            net = jnp.expand_dims(net,axis=1) #output shape = (batch_size,1,8,8,6)
-            
-        mu, logsigma = jnp.split(net, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
+        for patch in range(chosen_patches.shape[1]):
+            net = ACL_conv1(chosen_patches[:,patch,:,:,:])
+            net = nn.relu(net)
+            net = ACL_conv2(net)
+            net = nn.relu(net)
+            net = ACL_conv0(net)
+            network.at[:,patch,:,:,:].set(net)
+        
+        mu, logsigma = jnp.split(network, 2, axis=-1) # mu and logsigma will be also the same dimension as the to-be-transformed
         sigma = jax.nn.sigmoid(logsigma + 2.)
+        mu = jnp.average(mu,axis=1)
+        sigma = jnp.average(sigma,axis=1)
         
         if not only_neighbours:
-            mu = mu.repeat(15, axis=1)
-            sigma = sigma.repeat(15, axis=1)
-            
-            if not reverse:            
-                yb = (x_rest * sigma) + mu
+            if not reverse:
+                for index in rest_indices:
+                    all_patches = all_patches.at[:,index,:,:,:].multiply(sigma)
+                    all_patches = all_patches.at[:,index,:,:,:].add(mu)
+                sigma = jnp.expand_dims(sigma, axis=1)
+                sigma = sigma.repeat(len(rest_indices),axis=1)
                 logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
             else:
-                yb = (x_rest - mu) / (sigma + self.eps)
+                for index in rest_indices:
+                    all_patches = all_patches.at[:,index,:,:,:].add(-mu)
+                    all_patches = all_patches.at[:,index,:,:,:].divide(sigma+self.eps)
+                sigma = jnp.expand_dims(sigma, axis=1)
+                sigma = sigma.repeat(len(rest_indices),axis=1)
                 logdet -= jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
-            
-            y = jnp.insert(arr=yb,obj=random_patch,values=chosen_patch,axis=1)
+            y = all_patches
                  
         else:
             if not reverse:
@@ -125,7 +135,7 @@ class AffineCoupling(nn.Module):
                     all_patches = all_patches.at[:,index,:,:,:].add(-mu)
                     all_patches = all_patches.at[:,index,:,:,:].divide(sigma+self.eps)
                 sigma = sigma.repeat(len(neighbours),axis=1)
-                logdet -= jnp.sum(jnp.log((sigma.repeat(len(neighbours), axis=1))), axis=(1, 2, 3))
+                logdet = jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
             y = all_patches   
 
         #Turn patches back to the image - turn back y into (256, 32, 32, 3)
@@ -145,7 +155,7 @@ class ActNorm(nn.Module):
     def __call__(self, inputs, logdet=0, reverse=False):
         # Data dependent initialization. Will use the values of the batch
         # given during model.init
-        axes = tuple(i for i in range(len(inputs.shape) - 3))
+        axes = tuple(i for i in range(len(inputs.shape) - 1))
         def dd_mean_initializer(key, shape):
             """Data-dependant init for mu"""
             nonlocal inputs
