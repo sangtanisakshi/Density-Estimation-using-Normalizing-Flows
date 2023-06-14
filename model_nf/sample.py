@@ -24,7 +24,7 @@ def sample(model,
            key=jax.random.PRNGKey(0),
            postprocess_fn=None, 
            save_path=None,
-           display=True):
+           display=False):
     """Sampling only requires a call to the reverse pass of the model"""
     if eps is None:
         zL = jax.random.normal(key, shape) 

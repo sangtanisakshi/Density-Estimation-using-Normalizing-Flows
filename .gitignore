@@ -5,5 +5,5 @@ samples
 .vscode
 .ipynb_checkpoints
 wandb
-sample_evolution_*.gif
-NF_image_modeling.ipynb
+sample_evolution
+model_nf/models

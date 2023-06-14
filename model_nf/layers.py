@@ -70,7 +70,7 @@ class AffineCoupling(nn.Module):
     def __call__(self, inputs, logdet=0, reverse=False, dilation=False, only_neighbours=True):
         
         patch_indices = list(range(0,16,1))
-        random_patch_indices = random.sample(population=patch_indices,k=1)
+        random_patch_indices = random.sample(population=patch_indices,k=8)
         rest_indices = [idx for idx in patch_indices if idx not in random_patch_indices]
         ps = utils.get_patch_size(inputs, dilation)
         
@@ -155,7 +155,7 @@ class ActNorm(nn.Module):
     def __call__(self, inputs, logdet=0, reverse=False):
         # Data dependent initialization. Will use the values of the batch
         # given during model.init
-        axes = tuple(i for i in range(len(inputs.shape) - 1))
+        axes = tuple(i for i in range(len(inputs.shape) - 3))
         def dd_mean_initializer(key, shape):
             """Data-dependant init for mu"""
             nonlocal inputs

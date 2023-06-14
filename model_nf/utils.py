@@ -3,9 +3,9 @@ import flax
 import tensorflow as tf
 import numpy as np
 import jax.numpy as jnp
+import model as mo
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
-from model import GLOW
 
 def map_fn(image_path, num_bits=5, size=256, training=True):
     """Read image file, quantize and map to [-0.5, 0.5] range.
@@ -115,7 +115,7 @@ def sanity_check(random_key):
     # Input
     x_1 = jax.random.normal(random_key, (32, 32, 32, 3))
     K, L = 48, 1
-    model = GLOW(K=K, L=L, nn_width=512, key=random_key, learn_top_prior=True)
+    model = mo.GLOW(K=K, L=L, nn_width=512, key=random_key, learn_top_prior=True)
     init_variables = model.init(random_key, x_1)
 
     # Forward call
