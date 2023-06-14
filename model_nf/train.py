@@ -10,7 +10,7 @@ import glob
 import utils
 import tensorflow as tf
 import tensorflow_datasets as tfds
-
+import model as mo
 
 print(jax.devices())
 jax.config.update('jax_array', False)
@@ -21,7 +21,7 @@ from functools import partial
 from matplotlib import pyplot as plt
 from sample import postprocess
 from sample import sample
-from model import GLOW
+
 from PIL import Image
 
 print('Jax version', jax.__version__)
@@ -31,13 +31,13 @@ random.seed(42)
 random_key = jax.random.PRNGKey(0)
 
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-name','--wb_name', default="DENF-R2", type=str, help='WandB Run Name', required=False)
-parser.add_argument('-desc', '--wb_desc', default="Runs for paper.", type=str, help='WandB Run Description', required=False)
-parser.add_argument('-lr', '--init_lr',  default=0.001, type=float, help='Learning Rate', required=False)
+parser.add_argument('-name','--wb_name', default="DENF6-2", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-desc', '--wb_desc', default="No 1x1 Convolution Layer. Dilation is true. 0.01 LR. 8/16 trained. ActNorm axes calc=2", type=str, help='WandB Run Description', required=False)
+parser.add_argument('-lr', '--init_lr',  default=0.01, type=float, help='Learning Rate', required=False)
 parser.add_argument('-img', '--image_size',  default=64, help='Image Size', required=False)
 parser.add_argument('-wd', '--weight_decay',  default=0, type=float, help='Adam Weight Decay', required=False)
 parser.add_argument('-nn', '--nn_width',  default=512, type=int, help='Neural Network Width', required=False)
-parser.add_argument('-dil', '--dilation',  default=False, type=bool, help='Dilated patches in AC layer', required=False)
+parser.add_argument('-dil', '--dilation',  default=True, type=bool, help='Dilated patches in AC layer', required=False)
 parser.add_argument('-ol', '--only_neighbours',  default=False, type=bool, help='Neighbouring patches', required=False)
 args = parser.parse_args()
 
@@ -58,19 +58,21 @@ def get_logpz(z, priors):
 
 # Data hyperparameters for 1 GPU training
 config_dict = {
+    'wb_name' : args.wb_name,
+    'wb_desc' : args.wb_desc,
     'image_path': "/dhc/home/sakshi.sangtani/lfw/lfw-deepfunneled/lfw-deepfunneled/*",
     'train_split': 0.8,
     'image_size': args.image_size,
     'num_channels': 3,
     'num_bits': 8,
-    'batch_size': 320,
+    'batch_size': 256,
     'K': 48,
     'L': 1,
     'nn_width': args.nn_width,
     'learn_top_prior': True,
     'sampling_temperature': 0.7,
     'init_lr': args.init_lr,
-    'num_epochs': 30,
+    'num_epochs': 50,
     'num_warmup_epochs': 10, # For learning rate warmup
     'num_decay_epochs': 10,
     'num_sample_epochs': 0.5, # Fractional epochs for sampling because one epoch is quite long 
@@ -80,12 +82,6 @@ config_dict = {
     'dilation' : args.dilation,
     'only_neighbours' : args.only_neighbours
 }
-
-
-# Hyperparameter Optimization
-#if args.hpo == true:
-#   with open('./wandb_sweep.yaml') as file:
-#       hpo_config = yaml.load(file, Loader=yaml.FullLoader)
 
 output_hw = config_dict["image_size"]
 output_c = config_dict["num_channels"]
@@ -177,7 +173,7 @@ def train_glow(train_ds,
     """
     del kwargs
     # Init model
-    model = GLOW(K=K,
+    model = mo.GLOW(K=K,
                 L=L, 
                 nn_width=config_dict['nn_width'], 
                 learn_top_prior=learn_top_prior,
@@ -190,7 +186,7 @@ def train_glow(train_ds,
     opt = flax.optim.Adam(learning_rate=init_lr, weight_decay=config_dict['weight_decay']).create(params)
     ##TODO - check beta1 and beta2 values for Adam 
     # Summarize the final model
-    utils.summarize_jax_model(params, max_depth=4)
+    utils.summarize_jax_model(params, max_depth=2)
     
 
     #Learning rate scheduler
@@ -199,9 +195,9 @@ def train_glow(train_ds,
         step = step+1
         if step<=2:
             return init_lr
-        elif step>=3 and step<=15:
+        elif step>=3 and step<=20:
             return init_lr * 2 ** (opt_step / config_dict['num_decay_epochs'])
-        elif 15>=step:
+        elif 20>=step:
             return init_lr * 0.9 ** (opt_step / config_dict['num_decay_epochs'])
     
     # Helper functions for training
@@ -280,7 +276,7 @@ def train_glow(train_ds,
             
             # Save parameters
             if (epoch + 1) % num_save_epochs == 0 or epoch == num_epochs - 1:
-                with open((weights_loc+f'model_epoch={epoch + 1:03d}.weights'), 'wb') as f:
+                with open((weights_loc+f'model{config_dict["wb_name"]}_epoch={epoch + 1:03d}.weights'), 'wb') as f:
                     f.write(flax.serialization.to_bytes(opt.target))
     
     except KeyboardInterrupt:
@@ -319,7 +315,7 @@ print("Random samples evolution during training")
 
 # filepaths
 fp_in = fp + "step_*.png"
-fp_out = "../sample_evolution_" + args.wb_name + ".gif"
+fp_out = "../sample_evolution/sample_evolution_" + args.wb_name + ".gif"
 
 li_imgs = [np.asarray(Image.open(f)) for f in sorted(glob.glob(fp_in))]
 wandb.log({"Samples during Training": [wandb.Image(img) for img in li_imgs]})
