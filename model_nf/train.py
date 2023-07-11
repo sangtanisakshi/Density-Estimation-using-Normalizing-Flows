@@ -31,8 +31,8 @@ random.seed(42)
 random_key = jax.random.PRNGKey(0)
 
 parser = argparse.ArgumentParser(description='Training parameters')
-parser.add_argument('-name','--wb_name', default="DENF6-2", type=str, help='WandB Run Name', required=False)
-parser.add_argument('-desc', '--wb_desc', default="No 1x1 Convolution Layer. Dilation is true. 0.01 LR. 8/16 trained. ActNorm axes calc=2", type=str, help='WandB Run Description', required=False)
+parser.add_argument('-name','--wb_name', default="DENF7-1", type=str, help='WandB Run Name', required=False)
+parser.add_argument('-desc', '--wb_desc', default="Back to Conv. Dilation is true. 0.01 LR. 6/16 trained. ActNorm back to only on 1 axes", type=str, help='WandB Run Description', required=False)
 parser.add_argument('-lr', '--init_lr',  default=0.01, type=float, help='Learning Rate', required=False)
 parser.add_argument('-img', '--image_size',  default=64, help='Image Size', required=False)
 parser.add_argument('-wd', '--weight_decay',  default=0, type=float, help='Adam Weight Decay', required=False)
@@ -196,7 +196,7 @@ def train_glow(train_ds,
         if step<=2:
             return init_lr
         elif step>=3 and step<=20:
-            return init_lr * 2 ** (opt_step / config_dict['num_decay_epochs'])
+            return init_lr * 3 ** (opt_step / config_dict['num_decay_epochs'])
         elif 20>=step:
             return init_lr * 0.9 ** (opt_step / config_dict['num_decay_epochs'])
     

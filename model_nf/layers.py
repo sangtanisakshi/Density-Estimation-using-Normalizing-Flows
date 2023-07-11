@@ -70,7 +70,7 @@ class AffineCoupling(nn.Module):
     def __call__(self, inputs, logdet=0, reverse=False, dilation=False, only_neighbours=True):
         
         patch_indices = list(range(0,16,1))
-        random_patch_indices = random.sample(population=patch_indices,k=8)
+        random_patch_indices = random.sample(population=patch_indices,k=6)
         rest_indices = [idx for idx in patch_indices if idx not in random_patch_indices]
         ps = utils.get_patch_size(inputs, dilation)
         
@@ -129,13 +129,13 @@ class AffineCoupling(nn.Module):
                     all_patches = all_patches.at[:,index,:,:,:].multiply(sigma)
                     all_patches = all_patches.at[:,index,:,:,:].add(mu)
                 sigma = sigma.repeat(len(neighbours),axis=1)
-                logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+                logdet += jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
             else:
                 for index in neighbours:
                     all_patches = all_patches.at[:,index,:,:,:].add(-mu)
                     all_patches = all_patches.at[:,index,:,:,:].divide(sigma+self.eps)
                 sigma = sigma.repeat(len(neighbours),axis=1)
-                logdet = jnp.sum(jnp.log(sigma), axis=(1, 2, 3))
+                logdet = jnp.sum(jnp.log(sigma), axis=(1, 2, 3, 4))
             y = all_patches   
 
         #Turn patches back to the image - turn back y into (256, 32, 32, 3)
